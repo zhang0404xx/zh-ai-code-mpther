@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: zh-ai-code-mpther
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+server:
+  port: 8123
+  servlet:
+    context-path: /api
+
+springdoc:
+  group-configs:
+    - group: 'default'
+      paths-to-match: '/**'
+      packages-to-scan: com.zh.zhaicodempther.controller
+
+# 接口文档元信息，由 Knife4jConfig 注入
+zh:
+  api-doc:
+    title: zh-ai-code-mpther 接口文档
+    description: 基于 Spring Boot + Knife4j 的在线接口文档
+    version: v1.0.0
+    contact-name: zh
+
+  # 全局跨域，由 CorsConfig 注入；生产环境请把 allowed-origin-patterns 收窄到实际域名
+  cors:
+    allowed-origin-patterns: '*'
+    allowed-methods: GET,POST,PUT,DELETE,PATCH,OPTIONS,HEAD
+    allowed-headers: '*'
+    exposed-headers: ''
+    allow-credentials: false
+    max-age: 3600
