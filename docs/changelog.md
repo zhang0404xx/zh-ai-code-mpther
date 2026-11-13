@@ -3,9 +3,63 @@
 > 记录本项目的所有变更（遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，日期格式 `YYYY-MM-DD`）。
 > **维护约定**：任何依赖、配置、类结构、接口的增删改，都在本文件对应日期下新增条目，并同步更新 [file-class-reference.md](file-class-reference.md)；若涉及问题排查，另记入 [pitfalls.md](pitfalls.md)。
 >
-> 最后更新：2026-11-08
+> 最后更新：2026-11-12
 
 ## [未发布]
+
+### 新增（Added，2026-11-12）
+
+#### 代码生成器
+
+- `src/main/java/com/zh/zhaicodempther/generator/MyBatisFlexGenerator.java`：新增 MyBatis-Flex 代码生成器，采用官方模板写法（
+  `HikariDataSource` + `GlobalConfig` + `Generator`），独立 `main`，不注册 Bean、不参与应用启动
+  - 数据源用 Hutool `YamlUtil` 读取 classpath 的 `application.yml`（`spring.datasource.url/username/password`），不硬编码账号口令
+  - `setGenerateTable("user", "app", "chat_history")` 只生成三张表；去掉该行则生成全库
+  - 生成 entity / mapper / service / serviceImpl / controller，`basePackage` 为 `com.zh.zhaicodempther.genresult`
+    ，其下使用官方默认子包（`entity` / `mapper` / `service` / `service.impl` / `controller`）
+  - Lombok + JDK 21；`setLogicDeleteColumn("isDelete")` 使 `isDelete` 列生成 `@Column(isLogicDelete = true)`
+  - 官方默认 `overwriteEnable=false`，同名文件（含现有 `UserController`）自动跳过
+  - 类说明见 [file-class-reference.md](file-class-reference.md) 3.16，逻辑删除列名大小写坑见 [pitfalls.md](pitfalls.md)
+    P-19
+
+### 修复（Fixed，2026-11-12）
+
+#### 持久层依赖与启动失败
+
+- `pom.xml`：新增 `org.springframework.boot:spring-boot-starter-jdbc`（Boot 4 的 `DataSourceAutoConfiguration` 在
+  `spring-boot-jdbc` 模块，缺该 starter 时没有 `DataSource` / `spring-jdbc` / `spring-tx`）
+- `pom.xml`：`mybatis-flex-spring-boot3-starter:1.11.0` 换为 `mybatis-flex-spring-boot4-starter:1.11.8`（Boot 4 专用自动配置，传递
+  `mybatis-spring:4.0.0`）；`mybatis-flex-codegen` 同步升到 1.11.8
+- 修复启动报错 `NoSuchBeanDefinitionException: No qualifying bean of type ... AppMapper`
+  ，根因与验证见 [pitfalls.md](pitfalls.md) P-21
+
+#### 错误码
+
+- `ErrorCode`：新增用户域错误码 `USER_NAME_DUPLICATE(11001)` / `USER_NAME_NOT_FOUND(11002)` / `PASSWORD_ERROR(11003)`
+  ；修正其插入位置（原写在常量列表结束符 `;` 之后导致编译失败）及与 10001~10003 重复的问题
+
+#### 接口路径冲突
+
+- `UsersController`：`@RequestMapping("/user")` → `"/users"`，与生成的 CRUD 控制器 `UserController`（`/user`）区分，消除
+  `Ambiguous mapping ... /user/page` 启动失败（详见 [file-class-reference.md](file-class-reference.md) 3.10 / 3.10.1）
+
+#### 用户注册查重 SQL 列名错误
+
+- `UserServiceImpl#register`：`queryWrapper.eq("user_account", ...)` → `queryWrapper.eq(User::getUserAccount, ...)`，修复
+  `Unknown column 'user_account' in 'where clause'`（表列名为驼峰 `userAccount`，见 [pitfalls.md](pitfalls.md) P-22）
+
+### 验证（Verified，2026-11-12）
+
+| 检查项                                        | 结果                                                                                  |
+|--------------------------------------------|-------------------------------------------------------------------------------------|
+| `mvnw -DskipTests compile`                 | BUILD SUCCESS（官方模板版重写后再次编译通过）                                                       |
+| `Generator#getTables()` 不落盘检查（同参数配置）       | 识别 3 张表；驼峰列名属性名保持；三表 `isDelete` 均标记为逻辑删除                                            |
+| `mvnw -B -o clean compile`                 | BUILD SUCCESS（MyBatis-Flex starter 切换后）                                             |
+| `mvnw dependency:tree`                     | `mybatis-spring:4.0.0`、`spring-boot-starter-jdbc:4.1.2`、`spring-jdbc:7.0.10`        |
+| `mvnw spring-boot:run`                     | 打印 `MyBatisFlex v1.11.8` banner，`appMapper` / `appServiceImpl` 正常创建，无 Bean 缺失、无路径冲突 |
+| `GET /api/users/page?pageNum=1&pageSize=5` | 200，`total:30`，返回 id 1~5                                                            |
+| `GET /api/user/list`                       | 200，`[]`（Mapper → MySQL 链路打通）                                                       |
+| `GET /api/v3/api-docs`                     | 路径中包含 `/users/page`                                                                 |
 
 ### 计划中
 - 视需要将 `zh.api-doc.*` 改为 `@ConfigurationProperties` 形式并生成配置元数据（获得 IDE 补全）

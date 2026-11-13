@@ -1,68 +1,113 @@
 package com.zh.zhaicodempther.controller;
 
-import com.zh.zhaicodempther.common.PageQuery;
-import com.zh.zhaicodempther.common.PageResult;
+import com.mybatisflex.core.paginate.Page;
 import com.zh.zhaicodempther.common.Result;
-import com.zh.zhaicodempther.model.UserVO;
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.tags.Tag;
-import org.springdoc.core.annotations.ParameterObject;
+import com.zh.zhaicodempther.exception.ErrorCode;
+import com.zh.zhaicodempther.exception.ThrowUtils;
+import com.zh.zhaicodempther.model.dto.UserRegisterRequest;
+import jakarta.annotation.Resource;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.beans.factory.annotation.Autowired;
+import com.zh.zhaicodempther.model.entity.User;
+import com.zh.zhaicodempther.service.UserService;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.time.LocalDateTime;
 import java.util.List;
-import java.util.stream.IntStream;
 
 /**
- * 用户示例接口
- * <p>
- * 演示 {@link PageQuery} + {@link PageResult} + {@link Result} 的完整链路，
- * 数据为内存中的假数据，不涉及持久层。真实实现请替换为 Service 查询。
+ * 用户 控制层。
+ *
+ * @author zh
  */
-@Tag(name = "用户管理", description = "示例接口，数据为内存假数据")
 @RestController
 @RequestMapping("/user")
 public class UserController {
 
-    /** 假数据：30 条用户 */
-    private static final List<UserVO> MOCK_USERS = IntStream.rangeClosed(1, 30)
-            .mapToObj(i -> new UserVO(
-                    (long) i,
-                    "用户" + i,
-                    "user" + i + "@example.com",
-                    i % 2 == 0 ? "启用" : "禁用",
-                    LocalDateTime.of(2026, 1, 1, 0, 0).plusDays(i)))
-            .toList();
+    @Resource
+    private UserService userService;
 
-    @Operation(
-            summary = "分页查询用户",
-            description = """
-                    演示分页链路：
-                    1. pageNum / pageSize 越界会被 PageQuery 自动纠正（页大小上限 100）
-                    2. 响应体为 Result<PageResult<UserVO>>
-                    3. keyword 为空时返回全部数据
-                    """
-    )
-    @GetMapping("/page")
-    public Result<PageResult<UserVO>> page(
-            @ParameterObject PageQuery query,
-            @Parameter(description = "用户名关键字，模糊匹配", example = "用户1")
-            @RequestParam(required = false) String keyword) {
 
-        List<UserVO> filtered = (keyword == null || keyword.isBlank())
-                ? MOCK_USERS
-                : MOCK_USERS.stream()
-                        .filter(user -> user.name().contains(keyword.trim()))
-                        .toList();
-
-        long total = filtered.size();
-        int from = (int) Math.min(query.offset(), total);
-        int to = (int) Math.min((long) from + query.limit(), total);
-
-        return Result.ok(PageResult.of(filtered.subList(from, to), total, query));
+    /**
+     * 用户注册
+     * /**
+     * 用户注册
+     * @param userRegisterRequest
+     */
+    @PostMapping("register")
+    public Result<Long> register(@RequestBody UserRegisterRequest userRegisterRequest) {
+        ThrowUtils.throwIf(userRegisterRequest == null, ErrorCode.BAD_REQUEST, "用户信息不能为空");
+        long register = userService.register(userRegisterRequest.getUserAccount(), userRegisterRequest.getUserPassword(), userRegisterRequest.getCheckPassword());
+        return Result.ok(register);
     }
+
+    /**
+     * 保存用户。
+     *
+     * @param user 用户
+     * @return {@code true} 保存成功，{@code false} 保存失败
+     */
+    @PostMapping("save")
+    public boolean save(@RequestBody User user) {
+        return userService.save(user);
+    }
+
+    /**
+     * 根据主键删除用户。
+     *
+     * @param id 主键
+     * @return {@code true} 删除成功，{@code false} 删除失败
+     */
+    @DeleteMapping("remove/{id}")
+    public boolean remove(@PathVariable Long id) {
+        return userService.removeById(id);
+    }
+
+    /**
+     * 根据主键更新用户。
+     *
+     * @param user 用户
+     * @return {@code true} 更新成功，{@code false} 更新失败
+     */
+    @PutMapping("update")
+    public boolean update(@RequestBody User user) {
+        return userService.updateById(user);
+    }
+
+    /**
+     * 查询所有用户。
+     *
+     * @return 所有数据
+     */
+    @GetMapping("list")
+    public List<User> list() {
+        return userService.list();
+    }
+
+    /**
+     * 根据主键获取用户。
+     *
+     * @param id 用户主键
+     * @return 用户详情
+     */
+    @GetMapping("getInfo/{id}")
+    public User getInfo(@PathVariable Long id) {
+        return userService.getById(id);
+    }
+
+    /**
+     * 分页查询用户。
+     *
+     * @param page 分页对象
+     * @return 分页对象
+     */
+    @GetMapping("page")
+    public Page<User> page(Page<User> page) {
+        return userService.page(page);
+    }
+
 }

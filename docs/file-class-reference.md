@@ -3,20 +3,22 @@
 > 本文件说明项目目录结构、各文件职责、类与 Bean 的职责边界，以及配置项与对外端点。
 > **维护约定**：新增/删除/重命名文件、新增类或 Bean、调整配置项与端点时，同步更新本文件，并在 [changelog.md](changelog.md) 记录变更。
 >
-> 最后更新：2026-11-08
+> 最后更新：2026-11-12
 
 ## 一、技术栈
 
-| 项 | 值 |
-|---|---|
-| JDK | 21（`D:\Java\jdk21`） |
-| 框架 | Spring Boot 4.1.2 / Spring Framework 7 |
-| Web | `spring-boot-starter-webmvc`（Boot 4 起不再叫 `-web`，且**内置 validation**） |
-| 构建 | Maven Wrapper（Maven 3.10.0） |
-| 数据库驱动 | `mysql-connector-j`（`runtime`） |
-| 工具库 | Hutool 5.8.25 |
-| 接口文档 | springdoc-openapi 3.2.0 + Knife4j UI 4.5.0 |
-| 端口 / 上下文 | `8123` / `/api` |
+| 项        | 值                                                                                     |
+|----------|---------------------------------------------------------------------------------------|
+| JDK      | 21（`D:\Java\jdk21`）                                                                   |
+| 框架       | Spring Boot 4.1.2 / Spring Framework 7                                                |
+| Web      | `spring-boot-starter-webmvc`（Boot 4 起不再叫 `-web`，且**内置 validation**）                   |
+| 构建       | Maven Wrapper（Maven 3.10.0）                                                           |
+| 数据库驱动    | `mysql-connector-j`（`runtime`）                                                        |
+| 持久层      | MyBatis-Flex 1.11.0（`mybatis-flex-spring-boot3-starter`），代码生成用 `mybatis-flex-codegen` |
+| 连接池      | HikariCP（版本由 Boot 管理）                                                                 |
+| 工具库      | Hutool 5.8.25                                                                         |
+| 接口文档     | springdoc-openapi 3.2.0 + Knife4j UI 4.5.0                                            |
+| 端口 / 上下文 | `8123` / `/api`                                                                       |
 
 ## 二、目录结构
 
@@ -29,6 +31,8 @@ zh-ai-code-mpther
 │   ├── pitfalls.md                     # 踩坑记录
 │   ├── changelog.md                    # 变更记录
 │   └── file-class-reference.md         # 本文件
+├── sql/
+│   └── create_table.sql                # 建表脚本（user / app / chat_history）
 ├── src/main/java/com/zh/zhaicodempther/
 │   ├── ZhAiCodeMptherApplication.java  # 启动类
 │   ├── common/
@@ -40,15 +44,30 @@ zh-ai-code-mpther
 │   │   ├── CorsConfig.java              # 全局跨域配置
 │   │   └── Knife4jConfig.java          # 接口文档配置
 │   ├── controller/
+│   │   ├── AppController.java          # 应用 CRUD 接口（生成）
+│   │   ├── ChatHistoryController.java  # 会话历史 CRUD 接口（生成）
 │   │   ├── DemoController.java         # 分页/删除/异常示例接口
 │   │   ├── HealthController.java       # 健康检查接口
-│   │   └── UserController.java         # 用户分页示例接口
+│   │   ├── UserController.java         # 用户 CRUD 接口（生成，路径 /user）
+│   │   └── UsersController.java        # 用户分页示例接口（路径 /users）
+│   ├── mapper/
+│   │   ├── AppMapper.java              # 应用 Mapper
+│   │   ├── ChatHistoryMapper.java      # 会话历史 Mapper
+│   │   └── UserMapper.java             # 用户 Mapper
+│   ├── service/
+│   │   ├── AppService.java             # 应用服务接口
+│   │   ├── ChatHistoryService.java     # 会话历史服务接口
+│   │   ├── UserService.java            # 用户服务接口
+│   │   └── impl/                       # 三个 ServiceImpl（继承 ServiceImpl<Mapper, Entity>）
 │   ├── model/
-│   │   └── UserVO.java                 # 用户视图对象（示例）
-│   └── exception/
-│       ├── ErrorCode.java              # 错误码枚举
-│       ├── BizException.java           # 业务异常
-│       └── GlobalExceptionHandler.java # 全局异常处理器
+│   │   ├── UserVO.java                 # 用户视图对象（示例）
+│   │   └── entity/                     # 实体（App / ChatHistory / User）
+│   ├── exception/
+│   │   ├── ErrorCode.java              # 错误码枚举
+│   │   ├── BizException.java           # 业务异常
+│   │   └── GlobalExceptionHandler.java # 全局异常处理器
+│   └── generator/
+│       └── MyBatisFlexGenerator.java   # MyBatis-Flex 代码生成器（main 直接运行）
 ├── src/main/resources/
 │   └── application.yml                 # 应用配置
 └── src/test/java/com/zh/zhaicodempther/
@@ -84,7 +103,7 @@ zh-ai-code-mpther
 - **路径**：`src/main/java/com/zh/zhaicodempther/common/PageQuery.java`
 - **职责**：分页请求参数封装（`pageNum` / `pageSize` / `orderBy`）
 - **用法**：
-  - 直接作为接口入参：`GET /api/user/page?pageNum=1&pageSize=20`
+  - 直接作为接口入参：`GET /api/users/page?pageNum=1&pageSize=20`
   - 作为请求体父类（`class UserQuery extends PageQuery`）或字段
 - **默认值与约束**：`pageNum` 默认 1（小于 1 时纠正）、`pageSize` 默认 10（范围 1~`MAX_PAGE_SIZE`=100）、`orderBy` 字符级过滤后返回
 - **便捷方法**：`offset()`（`(pageNum-1)*pageSize`，供 SQL `limit offset` 用）、`limit()`（等价 `getPageSize()`）
@@ -109,23 +128,27 @@ zh-ai-code-mpther
   - `10000+`：业务错误码，语义上统一映射为 HTTP 400
 - **注意**：`GlobalExceptionHandler` 用 `HttpStatus.resolve(code)` 反查状态，5 位码返回 `null` 而全部回落 400（见 pitfalls P-16）
 
-| 码 | 枚举 | 含义 |
-|---|---|---|
-| 0 | `SUCCESS` | 成功 |
-| 40000 | `BAD_REQUEST` | 请求参数错误 |
-| 40100 | `UNAUTHORIZED` | 未认证或登录已过期 |
-| 40300 | `FORBIDDEN` | 没有操作权限 |
-| 40400 | `NOT_FOUND` | 请求的资源不存在 |
-| 40500 | `METHOD_NOT_ALLOWED` | 请求方法不支持 |
-| 41500 | `UNSUPPORTED_MEDIA_TYPE` | 不支持的媒体类型 |
-| 50000 | `INTERNAL_SERVER_ERROR` | 系统内部异常 |
-| 50300 | `SERVICE_UNAVAILABLE` | 服务暂不可用 |
-| 10000 | `BUSINESS_ERROR` | 业务处理失败 |
-| 10001 | `DATA_NOT_FOUND` | 数据不存在 |
-| 10002 | `DATA_DUPLICATE` | 数据已存在 |
-| 10003 | `OPERATION_NOT_ALLOWED` | 当前状态不允许该操作 |
+| 码     | 枚举                       | 含义         |
+|-------|--------------------------|------------|
+| 0     | `SUCCESS`                | 成功         |
+| 40000 | `BAD_REQUEST`            | 请求参数错误     |
+| 40100 | `UNAUTHORIZED`           | 未认证或登录已过期  |
+| 40300 | `FORBIDDEN`              | 没有操作权限     |
+| 40400 | `NOT_FOUND`              | 请求的资源不存在   |
+| 40500 | `METHOD_NOT_ALLOWED`     | 请求方法不支持    |
+| 41500 | `UNSUPPORTED_MEDIA_TYPE` | 不支持的媒体类型   |
+| 50000 | `INTERNAL_SERVER_ERROR`  | 系统内部异常     |
+| 50300 | `SERVICE_UNAVAILABLE`    | 服务暂不可用     |
+| 10000 | `BUSINESS_ERROR`         | 业务处理失败     |
+| 10001 | `DATA_NOT_FOUND`         | 数据不存在      |
+| 10002 | `DATA_DUPLICATE`         | 数据已存在      |
+| 10003 | `OPERATION_NOT_ALLOWED`  | 当前状态不允许该操作 |
+| 11001 | `USER_NAME_DUPLICATE`    | 用户名已存在     |
+| 11002 | `USER_NAME_NOT_FOUND`    | 用户名不存在     |
+| 11003 | `PASSWORD_ERROR`         | 密码错误       |
 
-- **扩展方式**：按业务域新增段位（如 20001~29999 表示订单域），并在本表登记
+- **扩展方式**：按业务域新增段位（`10xxx` 通用业务、`11xxx` 用户域；如 20001~29999 表示订单域），并在本表登记
+- **注意**：新增常量须写在最后一个常量的 `;` 之前（前一项结尾改为 `,`），且 `code` 不得与已有值重复
 
 ### 3.7 `BizException`（`extends RuntimeException`）
 - **路径**：`src/main/java/com/zh/zhaicodempther/exception/BizException.java`
@@ -160,10 +183,22 @@ zh-ai-code-mpther
 - **待改进**：处理方法是 `private` 的。Spring 通过反射 `setAccessible` 仍能映射并调用（已实测 200），但不符合 MVC 规范，且与 AOP 代理、AOT/原生镜像等场景存在失效风险，建议改为 `public`
 - **扩展建议**：返回 `Result.ok("ok")` 以统一响应格式；如需接入监控探针，可再加 `GET /api/health/live`、`/api/health/ready`
 
-### 3.10 `UserController`（`@RestController`）
+### 3.10 `UserController`（生成的 CRUD 控制器，`@RestController`）
 - **路径**：`src/main/java/com/zh/zhaicodempther/controller/UserController.java`
+- **职责**：MyBatis-Flex 生成器产出的用户 CRUD 接口，直接调用 `UserService`
+- **接口**：`POST /api/user/save`、`DELETE /api/user/remove/{id}`、`PUT /api/user/update`、`GET /api/user/list`、
+  `GET /api/user/getInfo/{id}`、`GET /api/user/page`（参数为 `Page<User>`）
+- **注意**：返回实体或 `Page`，未套项目 `Result`；`/user/page` 为 MyBatis-Flex 分页对象语义，与示例接口 `/users/page` 的
+  `PageQuery` 语义不同，勿混淆
+
+### 3.10.1 `UsersController`（分页示例控制器，`@RestController`）
+
+- **路径**：`src/main/java/com/zh/zhaicodempther/controller/UsersController.java`
 - **职责**：示例接口，演示 `PageQuery` + `PageResult` + `Result` 完整链路，数据来自内存常量 `MOCK_USERS`（30 条）
-- **接口**：`GET /api/user/page`，参数 `pageNum` / `pageSize` / `orderBy`（来自 `PageQuery`，用 `@ParameterObject` 展开）+ `keyword`（可选，用户名模糊匹配）
+- **接口**：`GET /api/users/page`，参数 `pageNum` / `pageSize` / `orderBy`（来自 `PageQuery`，用 `@ParameterObject` 展开）+
+  `keyword`（可选，用户名模糊匹配）
+- **为何是 `/users`**：生成的 `UserController` 已占用 `/user`，两者最初都映射 `/user/page` 导致 `Ambiguous mapping`
+  启动失败；示例改到复数路径 `/users` 后冲突消除
 - **实现要点**：
   - 分页通过 `subList(from, to)` 切分，`from`/`to` 均以 `total` 封顶，超出末页返回空集合而非报错
   - 页码/页大小纠正由 `PageQuery` 负责，控制器不重复判断
@@ -213,6 +248,22 @@ zh-ai-code-mpther
 - **配置项**：`zh.cors.allowed-origin-patterns`（默认 `*`）、`allowed-methods`（默认 7 个方法）、`allowed-headers`（默认 `*`，回显请求头）、`exposed-headers`（默认空）、`allow-credentials`（默认 false）、`max-age`（默认 3600 秒）
 - **注意**：`UrlBasedCorsConfigurationSource` 匹配 servletPath，**不含** `context-path=/api`，所以注册 `/**`；将来引入 Spring Security 时需确保 CORS 在其之前（或 `http.cors()` 复用同一 `CorsConfigurationSource`）
 
+### 3.16 `MyBatisFlexGenerator`（代码生成器，官方模板写法）
+
+- **路径**：`src/main/java/com/zh/zhaicodempther/generator/MyBatisFlexGenerator.java`
+- **职责**：`HikariDataSource` + `GlobalConfig` + `Generator` 三步生成代码，不注册 Spring Bean、不参与应用启动
+- **运行方式**：IDEA 里直接运行 `main`；源码按 `src/main/java` 相对路径输出，工作目录需为项目根
+- **数据源**：Hutool `YamlUtil.loadByPath("application.yml")` 读取 classpath 的 `spring.datasource.url/username/password`
+  ，不硬编码账号口令；yml 改动后需重新构建（读的是 `target/classes` 副本，见 pitfalls P-20）
+- **生成范围**：`setGenerateTable("user", "app", "chat_history")`；去掉该行则生成全库表
+- **输出包结构**：`basePackage` 为 `com.zh.zhaicodempther.genresult`，其下使用官方默认子包 `entity` / `mapper` /
+  `service` / `service.impl` / `controller`（与业务包隔离，不产生重名）
+- **模板风格**：Lombok、JDK 21；`setLogicDeleteColumn("isDelete")` 使 `isDelete` 列生成 `@Column(isLogicDelete = true)`
+  （列名大小写敏感，见 pitfalls P-19）
+- **覆盖策略**：官方默认 `overwriteEnable=false`，同名文件自动跳过；`genresult` 为独立包，不会影响现有
+  `controller/UserController.java`
+- **注意**：模板生成的 Controller 直接返回实体，不套项目 `Result`；实体也未加 `@Schema`，新表生成后需按项目约定改造
+
 ## 四、application.yml 配置项
 
 | 配置项 | 值 | 作用 |
@@ -238,30 +289,34 @@ zh-ai-code-mpther
 
 ## 五、对外端点
 
-| 用途 | 地址 |
-|---|---|
-| Knife4j 界面 | `http://localhost:8123/api/doc.html` |
-| 原生 Swagger UI | `http://localhost:8123/api/swagger-ui/index.html` |
-| OpenAPI 元数据 | `http://localhost:8123/api/v3/api-docs` |
-| 分组配置 | `http://localhost:8123/api/v3/api-docs/swagger-config` |
-| 分组元数据（中文分组） | `http://localhost:8123/api/v3/api-docs/全部接口` |
-| 健康检查 | `http://localhost:8123/api/health/check`（返回 `ok`） |
-| 用户分页示例 | `http://localhost:8123/api/user/page?pageNum=1&pageSize=5&keyword=用户1` |
-| Demo 分页示例 | `http://localhost:8123/api/demo/page?pageNum=1&pageSize=5` |
-| Demo 删除示例 | `DELETE http://localhost:8123/api/demo/delete`，body `{"ids":[1,2,3]}` |
-| Demo 异常示例 | `http://localhost:8123/api/demo/exception/biz?id=999`、`/wrap`、`/unexpected?index=99` |
+| 用途            | 地址                                                                                   |
+|---------------|--------------------------------------------------------------------------------------|
+| Knife4j 界面    | `http://localhost:8123/api/doc.html`                                                 |
+| 原生 Swagger UI | `http://localhost:8123/api/swagger-ui/index.html`                                    |
+| OpenAPI 元数据   | `http://localhost:8123/api/v3/api-docs`                                              |
+| 分组配置          | `http://localhost:8123/api/v3/api-docs/swagger-config`                               |
+| 分组元数据（中文分组）   | `http://localhost:8123/api/v3/api-docs/全部接口`                                         |
+| 健康检查          | `http://localhost:8123/api/health/check`（返回 `ok`）                                    |
+| 用户分页示例        | `http://localhost:8123/api/users/page?pageNum=1&pageSize=5&keyword=用户1`              |
+| Demo 分页示例     | `http://localhost:8123/api/demo/page?pageNum=1&pageSize=5`                           |
+| Demo 删除示例     | `DELETE http://localhost:8123/api/demo/delete`，body `{"ids":[1,2,3]}`                |
+| Demo 异常示例     | `http://localhost:8123/api/demo/exception/biz?id=999`、`/wrap`、`/unexpected?index=99` |
 
 ## 六、依赖清单（pom.xml）
 
-| 依赖 | 版本 | scope | 说明 |
-|---|---|---|---|
-| `spring-boot-starter-webmvc` | 4.1.2（parent 管理） | compile | Web MVC + 内置 validation |
-| `mysql-connector-j` | 9.7.0（parent 管理） | runtime | MySQL 驱动 |
-| `lombok` | 1.18.36 | compile（optional） | 注解处理，`@Slf4j` 等 |
-| `spring-boot-starter-webmvc-test` | 4.1.2 | test | 测试 |
-| `hutool-all` | 5.8.25 | compile | 工具集（体积较大，可按需拆 `hutool-core` 等） |
-| `springdoc-openapi-starter-webmvc-ui` | 3.2.0 | compile | OpenAPI 元数据 + 原生 UI |
-| `knife4j-openapi3-ui` | 4.5.0 | compile | Knife4j 前端静态资源 |
+| 依赖                                    | 版本               | scope             | 说明                                                                                    |
+|---------------------------------------|------------------|-------------------|---------------------------------------------------------------------------------------|
+| `spring-boot-starter-webmvc`          | 4.1.2（parent 管理） | compile           | Web MVC + 内置 validation                                                               |
+| `mysql-connector-j`                   | 9.7.0（parent 管理） | runtime           | MySQL 驱动                                                                              |
+| `lombok`                              | 1.18.36          | compile（optional） | 注解处理，`@Slf4j` 等                                                                       |
+| `spring-boot-starter-webmvc-test`     | 4.1.2            | test              | 测试                                                                                    |
+| `hutool-all`                          | 5.8.25           | compile           | 工具集（体积较大，可按需拆 `hutool-core` 等）                                                        |
+| `mybatis-flex-spring-boot4-starter`   | 1.11.8           | compile           | MyBatis-Flex 持久层（Spring Boot 4 专用 starter，传递 `mybatis-spring:4.0.0`）                  |
+| `mybatis-flex-codegen`                | 1.11.8           | compile           | 代码生成模块，仅 `generator` 包使用                                                              |
+| `spring-boot-starter-jdbc`            | 4.1.2（parent 管理） | compile           | 提供 `DataSourceAutoConfiguration` + `spring-jdbc` + `spring-tx`，MyBatis-Flex 自动配置的前置条件 |
+| `HikariCP`                            | Boot 管理          | compile           | 数据库连接池（生成器单次元数据连接）                                                                    |
+| `springdoc-openapi-starter-webmvc-ui` | 3.2.0            | compile           | OpenAPI 元数据 + 原生 UI                                                                   |
+| `knife4j-openapi3-ui`                 | 4.5.0            | compile           | Knife4j 前端静态资源                                                                        |
 
 ## 七、构建环境约定（本机）
 
@@ -285,5 +340,5 @@ $env:JAVA_HOME='D:\Java\jdk21'
 
 - `HealthController.check()` 改为 `public` 并返回 `Result.ok("ok")`
 - 确定错误码与 HTTP 状态的映射方案（当前全部 400，见 pitfalls P-16）
-- 持久层（MyBatis / JPA）与数据源配置
+- 业务层：生成器已覆盖实体 / Mapper / Service 骨架，Controller 与 DTO/VO 需按 `Result` + `PageQuery` 约定手写
 - 鉴权方案（若引入 JWT，需在 `Knife4jConfig` 增补 `SecurityScheme`）

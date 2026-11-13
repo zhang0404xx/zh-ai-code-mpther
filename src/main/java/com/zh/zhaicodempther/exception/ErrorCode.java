@@ -35,7 +35,20 @@ public enum ErrorCode {
     /** 数据已存在 */
     DATA_DUPLICATE(10002, "数据已存在"),
     /** 当前状态不允许该操作 */
-    OPERATION_NOT_ALLOWED(10003, "当前状态不允许该操作");
+    OPERATION_NOT_ALLOWED(10003, "当前状态不允许该操作"),
+
+    /**
+     * 用户名已存在
+     */
+    USER_NAME_DUPLICATE(11001, "用户名已存在"),
+    /**
+     * 用户名不存在
+     */
+    USER_NAME_NOT_FOUND(11002, "用户名不存在"),
+    /**
+     * 密码错误
+     */
+    PASSWORD_ERROR(11003, "密码错误");
 
     private final int code;
 

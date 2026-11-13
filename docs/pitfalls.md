@@ -3,30 +3,34 @@
 > 记录本项目（`zh-ai-code-mpther`）在搭建与开发过程中遇到的真实问题、根因与解决方式。
 > **维护约定**：遇到新坑、或验证发现旧结论不再成立时，在本文件新增/修正章节，并同步更新 [changelog.md](changelog.md)。
 >
-> 最后更新：2026-11-08
+> 最后更新：2026-11-12（新增 P-22）
 
 ## 索引
 
-| 编号 | 问题 | 影响面 |
-|---|---|---|
-| P-01 | Knife4j 4.x 与 Spring Boot 4 不兼容 | 依赖选型 |
-| P-02 | `knife4j.*` 配置在纯 UI 模式下不生效 | 配置 |
-| P-03 | `server.servlet.context-path` 使文档地址全部带前缀 | 访问路径 |
-| P-04 | `mvnw` 不读安装版 Maven 的 `conf/settings.xml`，镜像失效 | 构建速度 |
-| P-05 | 本地仓库来源 id 变更触发一次性重新校验 | 构建日志 |
-| P-06 | `mvnw` 默认用 JDK 11，编译 Java 21 项目失败 | 构建环境 |
-| P-07 | `spring-boot:run` 会先执行 `test-compile`，额外下载测试依赖 | 构建速度 |
-| P-08 | IDEA 运行中直接改 `.idea/workspace.xml` 可能被覆盖 | 工具链 |
-| P-09 | Spring Boot 4 的 starter 名称与内置 validation 变化 | 依赖/注解 |
-| P-10 | `Result` 的 `isSuccess()` 被 Jackson 序列化成 `success` 字段 | 接口契约 |
-| P-11 | PowerShell 控制台 GBK 编码导致中文响应"乱码" | 排查干扰 |
-| P-12 | C 盘 `.m2/repository` 与 D 盘仓库分叉 | 磁盘/配置 |
-| P-13 | 控制器方法写成 `private` 也能跑通，但有隐患 | 代码规范 |
-| P-14 | 分页参数直接用 `pageSize` / `orderBy` 拼 SQL | 性能/安全 |
-| P-15 | 对象参数加了 `@Parameter` 后不会被展开 | 接口文档 |
-| P-16 | 错误码改成 5 位后，所有错误都返回 HTTP 400 | 接口契约 |
-| P-17 | 带 body 的 DELETE 请求在部分客户端/网关不可用 | 接口契约 |
-| P-18 | 跨域配置的两个坑：`*` 与凭证互斥、404 响应无 CORS 头 | 跨域 |
+| 编号   | 问题                                                   | 影响面   |
+|------|------------------------------------------------------|-------|
+| P-01 | Knife4j 4.x 与 Spring Boot 4 不兼容                      | 依赖选型  |
+| P-02 | `knife4j.*` 配置在纯 UI 模式下不生效                           | 配置    |
+| P-03 | `server.servlet.context-path` 使文档地址全部带前缀             | 访问路径  |
+| P-04 | `mvnw` 不读安装版 Maven 的 `conf/settings.xml`，镜像失效        | 构建速度  |
+| P-05 | 本地仓库来源 id 变更触发一次性重新校验                                | 构建日志  |
+| P-06 | `mvnw` 默认用 JDK 11，编译 Java 21 项目失败                    | 构建环境  |
+| P-07 | `spring-boot:run` 会先执行 `test-compile`，额外下载测试依赖       | 构建速度  |
+| P-08 | IDEA 运行中直接改 `.idea/workspace.xml` 可能被覆盖              | 工具链   |
+| P-09 | Spring Boot 4 的 starter 名称与内置 validation 变化          | 依赖/注解 |
+| P-10 | `Result` 的 `isSuccess()` 被 Jackson 序列化成 `success` 字段 | 接口契约  |
+| P-11 | PowerShell 控制台 GBK 编码导致中文响应"乱码"                      | 排查干扰  |
+| P-12 | C 盘 `.m2/repository` 与 D 盘仓库分叉                       | 磁盘/配置 |
+| P-13 | 控制器方法写成 `private` 也能跑通，但有隐患                          | 代码规范  |
+| P-14 | 分页参数直接用 `pageSize` / `orderBy` 拼 SQL                 | 性能/安全 |
+| P-15 | 对象参数加了 `@Parameter` 后不会被展开                           | 接口文档  |
+| P-16 | 错误码改成 5 位后，所有错误都返回 HTTP 400                          | 接口契约  |
+| P-17 | 带 body 的 DELETE 请求在部分客户端/网关不可用                       | 接口契约  |
+| P-18 | 跨域配置的两个坑：`*` 与凭证互斥、404 响应无 CORS 头                    | 跨域    |
+| P-19 | 生成器 `setLogicDeleteColumn` 按列名精确匹配（大小写敏感），写错时静默不生效   | 代码生成  |
+| P-20 | Hutool 按路径读文件时以 classpath 为基准，传相对文件路径会失败             | 工具链   |
+| P-21 | Spring Boot 4 下 Mapper Bean 不存在（starter 版本与 JDBC 依赖） | 依赖/启动 |
+| P-22 | `QueryWrapper` 字符串列名写成下划线，报 `Unknown column 'user_account'` | 持久层   |
 
 ---
 
@@ -262,7 +266,8 @@ $env:JAVA_HOME='D:\Java\jdk21'
 
 ## P-15 对象参数加了 `@Parameter` 后不会被展开
 
-**现象**：`GET /api/user/page` 已经开启 `springdoc.default-flat-param-object: true`，但在 `/v3/api-docs` 里参数只有单个 `query`，看不到 `pageNum` / `pageSize` / `orderBy`，Knife4j 界面上也无法逐个填写。
+**现象**：`GET /api/users/page` 已经开启 `springdoc.default-flat-param-object: true`，但在 `/v3/api-docs` 里参数只有单个
+`query`，看不到 `pageNum` / `pageSize` / `orderBy`，Knife4j 界面上也无法逐个填写。
 
 **根因**：给 Bean 参数加了 `@Parameter` 注解后，springdoc 会把它当成**单个参数**描述，不再执行对象展平逻辑，`default-flat-param-object` 因此失效。
 
@@ -276,7 +281,7 @@ public Result<PageResult<UserVO>> page(@ParameterObject PageQuery query) { ... }
 **验证方式**：
 ```powershell
 (Invoke-WebRequest 'http://localhost:8123/api/v3/api-docs' -UseBasicParsing).Content | ConvertFrom-Json |
-  Select-Object -ExpandProperty paths | Select-Object -ExpandProperty '/user/page'
+  Select-Object -ExpandProperty paths | Select-Object -ExpandProperty '/users/page'
 # 期望 parameters 中包含 pageNum / pageSize / orderBy
 ```
 
@@ -361,10 +366,145 @@ Invoke-WebRequest -Uri 'http://localhost:8123/api/demo/delete' -Method Delete `
 **验证方式**（本项目实测）：
 ```powershell
 # 预检：200 + Allow-Origin / Allow-Methods / Max-Age
-Invoke-WebRequest 'http://localhost:8123/api/user/page' -Method Options `
+Invoke-WebRequest 'http://localhost:8123/api/users/page' -Method Options `
   -Headers @{'Origin'='http://localhost:5173';'Access-Control-Request-Method'='GET'} -UseBasicParsing
 # 404 也带 CORS 头
 Invoke-WebRequest 'http://localhost:8123/api/not-exist' -Headers @{'Origin'='http://localhost:5173'} -UseBasicParsing
 ```
 
 **扩展坑**：`UrlBasedCorsConfigurationSource` 匹配的是 **servletPath**（不含 `context-path=/api`），所以注册 `/**` 即可覆盖全部接口，写成 `/api/**` 反而全部不生效。
+
+---
+
+## P-19 生成器 `setLogicDeleteColumn` 按列名精确匹配，写错时静默不生效
+
+**现象**：`StrategyConfig.setLogicDeleteColumn("is_delete")` 或写成 `"ISDELETE"` 后，生成的实体没有任何逻辑删除标记，也没有任何报错或警告。
+
+**根因**：MyBatis-Flex 1.11.0 的 `StrategyConfig#getColumnConfig(table, column)` 内部用
+`columnName.equals(logicDeleteColumn)` 做**区分大小写的精确比较**，既不忽略大小写，也不做驼峰/下划线转换；不相等时只是不设置
+`logicDelete`，属于静默失败。
+
+**解决**：传入与数据库完全一致的列名（本项目 `sql/create_table.sql` 写作 `isDelete`，生成器里也直接写 `"isDelete"`
+）；若担心库间大小写差异，改用显式列配置：
+
+```java
+strategyConfig.setColumnConfig("user",
+                               ColumnConfig.create().
+
+setColumnName("isDelete").
+
+setLogicDelete(true));
+```
+
+**验证方式**：不落盘，直接看生成器解析出的列元数据：
+
+```java
+new Generator(dataSource, globalConfig).getTables()
+    .forEach(t -> t.getColumns().forEach(c ->
+        System.out.println(t.getName() + "." + c.getName() + " logicDelete="
+            + c.getColumnConfig().getLogicDelete())));
+// 期望三张表的 isDelete 均输出 logicDelete=true
+```
+
+**附带注意**：生成器用 Hutool `YamlUtil.loadByPath("application.yml")` 读取 classpath 资源，实际读的是 `target/classes`
+里的副本；改完 `src/main/resources/application.yml` 未重新构建时会连旧库（路径解析规则见 P-20）。
+
+---
+
+## P-20 Hutool 按路径读文件时以 classpath 为基准，传相对文件路径会失败
+
+**现象**：
+
+- `YamlUtil.loadByPath("src/main/resources/application.yml")` 抛 `NoResourceException`；
+- `FileUtil.getReader("src/main/resources/application.yml", UTF_8)` 抛 `FileNotFoundException`，报错路径变成
+  `target/classes/src/main/resources/application.yml`。
+
+**根因**：Hutool 的 `ResourceUtil.getResourceObj` / `FileUtil` 的 String 重载把入参当 **classpath 资源名**
+解析，不会按进程工作目录（项目根）找文件；只有 classpath 中不存在时才回落到文件路径，而回落时仍以 classpath 根为基准拼接。
+
+**解决**：
+
+- 读 classpath 资源：`YamlUtil.loadByPath("application.yml")`（项目生成器采用此写法，要求 `target/classes` 已同步）；
+- 必须读源文件时：用 JDK API 明确以工作目录为基准，如
+  `Files.newBufferedReader(Path.of("src/main/resources/application.yml"))`。
+
+**验证方式**：同一目录下分别运行上述两种写法，前者能打印出 `url/username/password`，后者抛异常；换成 `application.yml` 作为
+`loadByPath` 入参后返回正常。
+
+---
+
+## P-21 Spring Boot 4 下 Mapper Bean 不存在（starter 版本与 JDBC 依赖）
+
+**现象**：启动报
+`NoSuchBeanDefinitionException: No qualifying bean of type 'com.zh.zhaicodempther.mapper.AppMapper' available`，
+而 `AppMapper` 只是个继承 `BaseMapper<App>` 的空接口，堆栈底层落在 `AppServiceImpl` 继承的 `ServiceImpl` 字段 `mapper`
+的注入上。
+
+**根因（两个叠在一起）**：
+
+1. `pom.xml` 只声明了 `mysql-connector-j` + `HikariCP`，没有 `spring-boot-starter-jdbc`。Boot 4 把 JDBC 自动配置拆到
+   `spring-boot-jdbc` 模块（`org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration`），缺该 starter 就没有
+   `DataSource`、没有 `spring-jdbc` / `spring-tx`，MyBatis-Flex 自动配置的前置条件不满足，Mapper 扫描根本不启动。
+2. `mybatis-flex-spring-boot3-starter:1.11.0` 的 `MybatisFlexAutoConfiguration` 用
+   `@AutoConfigureAfter(org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration.class)` 引用 Boot 3
+   的旧包名，Boot 4 中该类已迁移，排序失效。补上 JDBC starter 后 Mapper Bean 虽被扫描注册，但依赖 `DataSource` 的
+   `sqlSessionFactory` Bean 未创建，报错变为 `Property 'sqlSessionFactory' or 'sqlSessionTemplate' are required`。它传递的
+   `mybatis-spring:3.0.4` 也是 Spring 6 世代。
+
+**解决**：
+
+```xml
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-jdbc</artifactId>
+</dependency>
+<dependency>
+<groupId>com.mybatis-flex</groupId>
+<artifactId>mybatis-flex-spring-boot4-starter</artifactId>
+<version>1.11.8</version>
+</dependency>
+```
+
+- MyBatis-Flex 自 `1.11.5` 起提供 Boot 4 专用 starter，自动配置在 `com.mybatisflex.spring.boot.v4` 包，
+  `@AutoConfigureAfter` 指向 `org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration`，传递
+  `mybatis-spring:4.0.0`。
+- `mybatis-flex-codegen` 同步升到同一版本，避免与 `mybatis-flex-core` 跨版本混用。
+
+**验证方式**：
+
+```powershell
+$env:JAVA_HOME='D:\Java\jdk21'
+.\mvnw.cmd -B -o clean compile          # BUILD SUCCESS
+.\mvnw.cmd -B -o dependency:tree | Select-String 'mybatis|starter-jdbc|spring-jdbc'
+# 期望：mybatis-flex-spring-boot4-starter:1.11.8、mybatis-spring:4.0.0、spring-boot-starter-jdbc:4.1.2
+.\mvnw.cmd -B spring-boot:run
+# 期望：打印 MyBatisFlex v1.11.8 banner，appMapper / appServiceImpl 正常创建
+```
+
+**附带注意**：依赖修好后暴露出另一个阻塞启动的问题——生成的 `UserController` 与示例 `UsersController` 都映射
+`GET /user/page`，报 `Ambiguous mapping`；示例接口已改到 `/users/page`
+（见 [file-class-reference.md](file-class-reference.md) 3.10.1）。
+
+**重新评估条件**：回到 Spring Boot 3.x 应改回 `mybatis-flex-spring-boot3-starter`；若暂时无法升级 starter，可自建
+`@MapperScan` + `FlexSqlSessionFactoryBean` 手动配置兜底（官方 starter 的自动配置思路同样可照搬）。
+
+---
+
+## P-22 `QueryWrapper` 字符串列名写成下划线，报 `Unknown column 'user_account'`
+
+**现象**：调用注册接口时抛
+`java.sql.SQLSyntaxErrorException: Unknown column 'user_account' in 'where clause'`。
+
+**根因**：`UserServiceImpl#register` 中写了 `queryWrapper.eq("user_account", userAccount)`。字符串形式的列名会**原样**
+拼进 SQL，不经过实体映射；而 `sql/create_table.sql` 的列名是驼峰 `userAccount`（实体也是 `@Column("userAccount")`），库中不存在
+`user_account` 列。
+
+**解决**：改用方法引用，由 MyBatis-Flex 按实体 `@Column` 解析真实列名：
+
+```java
+queryWrapper.eq(User::getUserAccount, userAccount);
+```
+
+**适用边界**：本项目所有表均为驼峰列名（`userId`、`isDelete`、`createTime` 等），凡是 `QueryWrapper` / `orderBy` 中手写字符串列名的地方都有同样风险，
+优先使用 `User::getXxx` 方法引用或 APT 生成的 `USER.USER_ACCOUNT` 表定义。
