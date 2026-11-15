@@ -1,4 +1,4 @@
-package com.zh.zhaicodempther.model;
+package com.zh.zhaicodempther.model.vo;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
  * @param createdAt 创建时间
  */
 @Schema(description = "用户信息")
-public record UserVO(
+public record UsersVO(
         @Schema(description = "用户 ID", example = "1") Long id,
         @Schema(description = "用户名", example = "用户1") String name,
         @Schema(description = "邮箱", example = "user1@example.com") String email,

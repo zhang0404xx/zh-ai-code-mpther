@@ -6,7 +6,7 @@ import com.zh.zhaicodempther.common.PageResult;
 import com.zh.zhaicodempther.common.Result;
 import com.zh.zhaicodempther.exception.BizException;
 import com.zh.zhaicodempther.exception.ErrorCode;
-import com.zh.zhaicodempther.model.UserVO;
+import com.zh.zhaicodempther.model.vo.UsersVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -36,8 +36,8 @@ import java.util.stream.IntStream;
 public class DemoController {
 
     /** 假数据：12 条示例记录 */
-    private static final List<UserVO> MOCK_DATA = IntStream.rangeClosed(1, 12)
-            .mapToObj(i -> new UserVO(
+    private static final List<UsersVO> MOCK_DATA = IntStream.rangeClosed(1, 12)
+            .mapToObj(i -> new UsersVO(
                     (long) i,
                     "示例" + i,
                     "demo" + i + "@example.com",
@@ -66,7 +66,7 @@ public class DemoController {
                     """
     )
     @GetMapping("/page")
-    public Result<PageResult<UserVO>> page(@ParameterObject PageQuery query) {
+    public Result<PageResult<UsersVO>> page(@ParameterObject PageQuery query) {
         long total = MOCK_DATA.size();
         int from = (int) Math.min(query.offset(), total);
         int to = (int) Math.min((long) from + query.limit(), total);
@@ -117,7 +117,7 @@ public class DemoController {
             description = "找不到数据时 throw new BizException(ErrorCode.DATA_NOT_FOUND, ...)，返回 10001"
     )
     @GetMapping("/exception/biz")
-    public Result<UserVO> bizException(@RequestParam long id) {
+    public Result<UsersVO> bizException(@RequestParam long id) {
         return MOCK_DATA.stream()
                 .filter(user -> user.id() == id)
                 .findFirst()
@@ -156,7 +156,7 @@ public class DemoController {
             description = "index 越界触发 IndexOutOfBoundsException，返回 50000 且不泄露堆栈"
     )
     @GetMapping("/exception/unexpected")
-    public Result<UserVO> unexpectedException(@RequestParam(defaultValue = "0") int index) {
+    public Result<UsersVO> unexpectedException(@RequestParam(defaultValue = "0") int index) {
         // 故意越界，模拟未预期的运行时异常
         return Result.ok(MOCK_DATA.get(index));
     }

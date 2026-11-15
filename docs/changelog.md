@@ -3,9 +3,73 @@
 > 记录本项目的所有变更（遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，日期格式 `YYYY-MM-DD`）。
 > **维护约定**：任何依赖、配置、类结构、接口的增删改，都在本文件对应日期下新增条目，并同步更新 [file-class-reference.md](file-class-reference.md)；若涉及问题排查，另记入 [pitfalls.md](pitfalls.md)。
 >
-> 最后更新：2026-11-12
+> 最后更新：2026-11-13
 
 ## [未发布]
+
+### 新增（Added，2026-11-13）
+
+#### 获取当前登录用户
+
+- `UserService`：新增 `User getLoginUser(HttpServletRequest request)`
+- `UserServiceImpl#getLoginUser`：从 Session 读取 `UserConstant.USER_LOGIN_STATE`，为空或无 id 时抛
+  `BizException(UNAUTHORIZED, "用户未登录")`；再按 id 查库返回最新数据，查不到同样视为未登录
+- `UserController`：新增 `GET /api/user/get/login`，返回 `Result<LonginUserVo>`（经 `loginUserVo` 脱敏）
+
+#### 用户注销
+
+- `UserService`：新增 `boolean userLogout(HttpServletRequest request)`
+- `UserServiceImpl#userLogout`：Session 中无 `USER_LOGIN_STATE` 时抛 `BizException(UNAUTHORIZED, "用户未登录")`，否则
+  `removeAttribute` 清除登录态并返回 `true`
+- `UserController`：新增 `POST /api/user/logout`，返回 `Result<Boolean>`
+
+#### AOP 依赖
+
+- `pom.xml`：新增 `org.springframework.boot:spring-boot-starter-aspectj`（版本由 parent 管理，4.1.2），传递
+  `spring-aop:7.0.10` + `aspectjweaver:1.9.25.1`；Boot 4 中原 `spring-boot-starter-aop` 已更名，见 [pitfalls.md](pitfalls.md) P-09
+
+#### Controller 日志切面
+
+- `src/main/java/com/zh/zhaicodempther/aop/ControllerLogAspect.java`：新增 `@Aspect` 环绕通知，切入点
+  `execution(* com.zh.zhaicodempther.controller..*(..))`
+  - 正常调用 `info`：`[HTTP 方法 URI] 类#方法 | 参数 | 返回 | 耗时`；异常 `warn`：记录异常类型与信息后原样抛出
+  - 参数按名称组装，跳过 `ServletRequest/Response`、`HttpSession`、`BindingResult`、流；`MultipartFile` 只记文件名与大小
+  - key 含 `password` 的字段脱敏为 `******`；单段超过 2000 字符截断
+  - 序列化用容器内 Jackson 3 `ObjectMapper`（Hutool 无法序列化 record，见 [pitfalls.md](pitfalls.md) P-23）
+  - `@Order(1)`，位于权限切面外层，鉴权失败也会记录
+
+#### 注解式权限控制
+
+- `annotation/AuthCheck.java`：新增权限注解，`mustRole` 为 `UserRoleEnum`（默认 `USER`，即登录即可），可标注在方法或类上，方法优先
+- `aop/AuthCheckAspect.java`：新增权限切面（`@Order(2)`），切入点 `@annotation(AuthCheck) || @within(AuthCheck)`；
+  通过 `UserService#getLoginUser` 取当前用户（未登录 `40100`），角色等级不足或未知角色 `40300`
+- `UserRoleEnum`：新增 `level` 字段（`USER=10`、`ADMIN=100`）与 `hasPermission(required)`，高等级自动拥有低等级权限；新增角色只需加枚举常量
+- `UserController`：生成的 CRUD 接口 `save` / `remove` / `update` / `list` / `getInfo` / `page` 加
+  `@AuthCheck(mustRole = UserRoleEnum.ADMIN)`，仅管理员可访问（原先任何人可读写全部用户数据）
+
+#### 脱敏用户查询（user / admin 均可访问）
+
+- `UserService` / `UserServiceImpl`：新增 `getUserVo(User)`、`getUserVoList(List<User>)`，只复制 `UserVo` 字段（不含
+  `userPassword` / `isDelete` / `editTime` / `updateTime`）
+- `UserController`：新增 `GET /api/user/get/vo/{id}`（`Result<UserVo>`，用户不存在 → `10001`）与
+  `GET /api/user/list/page/vo`（`PageQuery` 接参，返回 `Result<PageResult<UserVo>>`），均标注 `@AuthCheck`
+
+### 验证（Verified，2026-11-13）
+
+| 检查项                        | 结果            |
+|----------------------------|---------------|
+| `mvnw -B -o -DskipTests compile` | BUILD SUCCESS（获取登录用户、注销各编译一次） |
+| `mvnw compile dependency:tree`（过滤 aspectj） | BUILD SUCCESS，`spring-boot-starter-aspectj:4.1.2` → `spring-aop` + `aspectjweaver` |
+| `GET /api/demo/page?pageNum=1&pageSize=2` | 200，切面日志含参数 `query`、完整 `Result` 返回值与耗时 |
+| `POST /api/user/login`（不存在的账号） | 400，切面 `warn` 日志含 `BizException`，`userPassword` 显示为 `******` |
+| 验证后服务关闭 | 8123 端口已释放 |
+| 未登录 `GET /api/user/list` | 400 + `40100 用户未登录` |
+| 普通用户 `authtest01` 登录后 `GET /api/user/list`、`/user/getInfo/1` | 400 + `40300 没有操作权限`，日志切面记录拒绝 |
+| 普通用户 `GET /api/user/get/login`（无注解） | 200，正常返回 |
+| 管理员放行路径（`authtest01` 的 `userRole` 改为 `admin`） | `GET /api/user/list`、`/user/getInfo/{id}` 均 200 返回数据；注销后再访问 `list` → `40100` |
+| 未登录 `GET /api/user/get/vo/{id}` | 400 + `40100` |
+| 普通用户 `authtest02` / 管理员 `authtest01` 访问 `get/vo/{id}`、`list/page/vo?pageNum=1&pageSize=2` | 均 200，`total:4`，响应不含 `userPassword` / `isDelete` |
+| `GET /api/user/get/vo/1`（不存在） | 400 + `10001 用户不存在` |
 
 ### 新增（Added，2026-11-12）
 

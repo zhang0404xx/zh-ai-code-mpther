@@ -3,7 +3,7 @@
 > 记录本项目（`zh-ai-code-mpther`）在搭建与开发过程中遇到的真实问题、根因与解决方式。
 > **维护约定**：遇到新坑、或验证发现旧结论不再成立时，在本文件新增/修正章节，并同步更新 [changelog.md](changelog.md)。
 >
-> 最后更新：2026-11-12（新增 P-22）
+> 最后更新：2026-11-13（补充 P-09 AOP starter 更名；新增 P-23）
 
 ## 索引
 
@@ -31,6 +31,7 @@
 | P-20 | Hutool 按路径读文件时以 classpath 为基准，传相对文件路径会失败             | 工具链   |
 | P-21 | Spring Boot 4 下 Mapper Bean 不存在（starter 版本与 JDBC 依赖） | 依赖/启动 |
 | P-22 | `QueryWrapper` 字符串列名写成下划线，报 `Unknown column 'user_account'` | 持久层   |
+| P-23 | Hutool `JSONUtil` 序列化 record 得到 `{}`，日志切面返回值为空              | 日志    |
 
 ---
 
@@ -186,7 +187,8 @@ $env:JAVA_HOME='D:\Java\jdk21'
 ## P-09 Spring Boot 4 的 starter 名称与内置 validation 变化
 
 **要点**：
-1. **starter 名称变化**：Boot 4 使用 `spring-boot-starter-webmvc`，不再是 `spring-boot-starter-web`。
+1. **starter 名称变化**：Boot 4 使用 `spring-boot-starter-webmvc`，不再是 `spring-boot-starter-web`；AOP 使用
+   `spring-boot-starter-aspectj`，`spring-boot-starter-aop` 在 4.1.2 的 BOM 中已不存在（照搬 Boot 3 教程会报缺少版本号）。
 2. **内置 validation**：`spring-boot-starter-webmvc` 已传递引入 `spring-boot-validation`（含 `hibernate-validator 9.1.5` + `jakarta.validation-api 3.1.1`），因此 `@Valid` / `@NotBlank` 开箱可用，**不需要**再单独引 `spring-boot-starter-validation`。
 3. **Jackson 版本**：Boot 4 主用 Jackson 3（`tools.jackson.core:jackson-databind:3.1.7`），同时传递 Jackson 2；Java `record` 序列化正常。
 
@@ -508,3 +510,23 @@ queryWrapper.eq(User::getUserAccount, userAccount);
 
 **适用边界**：本项目所有表均为驼峰列名（`userId`、`isDelete`、`createTime` 等），凡是 `QueryWrapper` / `orderBy` 中手写字符串列名的地方都有同样风险，
 优先使用 `User::getXxx` 方法引用或 APT 生成的 `USER.USER_ACCOUNT` 表定义。
+
+---
+
+## P-23 Hutool `JSONUtil` 序列化 record 得到 `{}`，日志切面返回值为空
+
+**现象**：`ControllerLogAspect` 初版用 `JSONUtil.toJsonStr` 序列化返回值，`GET /api/demo/page` 的日志为 `返回: {}`，而接口
+实际响应正常。
+
+**根因**：`Result` / `PageResult` 是 Java `record`，访问器是 `code()` 而非 `getCode()`；Hutool 5.8.25 按 JavaBean getter
+反射取值，识别不到 record 组件，静默输出空对象。
+
+**解决**：切面构造器注入 Spring 容器中的 Jackson 3 `tools.jackson.databind.ObjectMapper`，用 `writeValueAsString`
+序列化——与接口响应规则一致（含 `success` 字段、日期格式）。
+
+**验证方式**：启动后调用 `GET /api/demo/page?pageNum=1&pageSize=2`，日志返回值包含 `"code":0` 与 `"total":12`。
+
+**适用边界**：凡涉及 record（`Result`、`PageResult`、`DeleteRequest`、`UserVO`）的 JSON 序列化，都不要用 Hutool
+`JSONUtil` / `BeanUtil.beanToMap`。切面只作用于 `public` 方法，`HealthController#check`（`private`）不会记日志，见 P-13。
+
+**重新评估条件**：Hutool 升级到支持 record 的版本（如 6.x）后可重新评估，但仍建议与接口共用 Jackson。

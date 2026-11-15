@@ -3,7 +3,7 @@
 > 本文件说明项目目录结构、各文件职责、类与 Bean 的职责边界，以及配置项与对外端点。
 > **维护约定**：新增/删除/重命名文件、新增类或 Bean、调整配置项与端点时，同步更新本文件，并在 [changelog.md](changelog.md) 记录变更。
 >
-> 最后更新：2026-11-12
+> 最后更新：2026-11-13
 
 ## 一、技术栈
 
@@ -35,6 +35,11 @@ zh-ai-code-mpther
 │   └── create_table.sql                # 建表脚本（user / app / chat_history）
 ├── src/main/java/com/zh/zhaicodempther/
 │   ├── ZhAiCodeMptherApplication.java  # 启动类
+│   ├── annotation/
+│   │   └── AuthCheck.java              # 权限校验注解
+│   ├── aop/
+│   │   ├── AuthCheckAspect.java        # 权限校验切面（@Order(2)）
+│   │   └── ControllerLogAspect.java    # Controller 日志切面（参数/返回/耗时，@Order(1)）
 │   ├── common/
 │   │   ├── DeleteRequest.java             # 删除请求封装
 │   │   ├── PageQuery.java               # 分页请求封装
@@ -188,6 +193,16 @@ zh-ai-code-mpther
 - **职责**：MyBatis-Flex 生成器产出的用户 CRUD 接口，直接调用 `UserService`
 - **接口**：`POST /api/user/save`、`DELETE /api/user/remove/{id}`、`PUT /api/user/update`、`GET /api/user/list`、
   `GET /api/user/getInfo/{id}`、`GET /api/user/page`（参数为 `Page<User>`）
+- **登录相关接口**（返回 `Result`）：`POST /api/user/register`、`POST /api/user/login`（成功后写入 Session
+  `USER_LOGIN_STATE`）、`GET /api/user/get/login`（读取 Session 登录态 → 按 id 查库 → 返回脱敏 `LonginUserVo`；未登录返回
+  `UNAUTHORIZED(40100)`）、`POST /api/user/logout`（移除 Session 登录态，返回 `Result<Boolean>`；未登录返回 `40100`）
+- **Service 链路**：`UserService#getLoginUser(HttpServletRequest)` 返回 `User` 实体，供其他业务复用；Controller 层再调用
+  `loginUserVo` 脱敏
+- **权限**：CRUD 接口（`save` / `remove` / `update` / `list` / `getInfo` / `page`）均为 `@AuthCheck(mustRole = ADMIN)`；
+  `register` / `login` / `get/login` / `logout` 无注解
+- **脱敏查询接口**（`@AuthCheck`，user / admin 均可）：`GET /api/user/get/vo/{id}` → `Result<UserVo>`；
+  `GET /api/user/list/page/vo?pageNum=&pageSize=` → `Result<PageResult<UserVo>>`；经 `UserService#getUserVo` /
+  `getUserVoList` 转换，不返回密码与逻辑删除字段；分页未使用 `orderBy`
 - **注意**：返回实体或 `Page`，未套项目 `Result`；`/user/page` 为 MyBatis-Flex 分页对象语义，与示例接口 `/users/page` 的
   `PageQuery` 语义不同，勿混淆
 
@@ -264,6 +279,33 @@ zh-ai-code-mpther
   `controller/UserController.java`
 - **注意**：模板生成的 Controller 直接返回实体，不套项目 `Result`；实体也未加 `@Schema`，新表生成后需按项目约定改造
 
+### 3.17 `ControllerLogAspect`（`@Aspect` + `@Component`）
+
+- **路径**：`src/main/java/com/zh/zhaicodempther/aop/ControllerLogAspect.java`
+- **职责**：`@Around` 拦截 `com.zh.zhaicodempther.controller..*` 的所有方法，记录请求地址、参数、返回值与耗时
+- **日志格式**：
+  - 成功（`info`）：`[GET /api/demo/page] DemoController#page | 参数: {...} | 返回: {...} | 耗时: 1 ms`
+  - 异常（`warn`）：`... | 异常: BizException: 用户不存在 | 耗时: 261 ms`，随后原样抛出，由 `GlobalExceptionHandler` 生成响应
+- **参数处理**：按参数名组装为 JSON；跳过 `ServletRequest/Response`、`HttpSession`、`BindingResult`、`InputStream/OutputStream`；
+  `MultipartFile` 只记录文件名与大小
+- **安全与体积**：JSON 中 key 含 `password`（忽略大小写）的值替换为 `******`；单段超过 `MAX_LOG_LENGTH`=2000 字符截断
+- **序列化**：构造器注入 Jackson 3 `tools.jackson.databind.ObjectMapper`，与接口响应一致；失败时退化为 `toString`（不用 Hutool，见
+  pitfalls P-23）
+- **注意**：依赖 `spring-boot-starter-aspectj`；`private` 方法不会被拦截（当前 `HealthController#check` 无日志）；返回大列表的接口会
+  增加序列化开销，必要时可调低日志级别或缩小切入点
+- **顺序**：`@Order(1)`，包在 `AuthCheckAspect` 外层，鉴权失败也会输出 `warn` 日志
+
+### 3.18 `AuthCheck`（注解）与 `AuthCheckAspect`（`@Aspect` + `@Component` + `@Order(2)`）
+
+- **路径**：`annotation/AuthCheck.java`、`aop/AuthCheckAspect.java`
+- **用法**：`@AuthCheck` 登录即可；`@AuthCheck(mustRole = UserRoleEnum.ADMIN)` 仅管理员；可标注在方法或类上，方法优先
+- **校验流程**：`UserService#getLoginUser` 取登录用户（未登录 → `40100`）→ `UserRoleEnum.getEnumByValue(userRole)` →
+  `hasPermission(mustRole)`，不满足或角色未知 → `40300`
+- **角色等级**：`UserRoleEnum.level`，`USER=10`、`ADMIN=100`，高等级自动拥有低等级权限；新增角色只需加枚举常量并选定等级
+  （如 `VIP("会员", "vip", 50)`），切面无需修改
+- **注意**：角色以数据库最新值为准（每次鉴权查一次库），改角色后无需重新登录；`private` 方法上的注解不生效；若将来出现
+  非线性权限（如互斥角色），需把 `mustRole` 扩展为数组或改为权限点模型
+
 ## 四、application.yml 配置项
 
 | 配置项 | 值 | 作用 |
@@ -301,6 +343,9 @@ zh-ai-code-mpther
 | Demo 分页示例     | `http://localhost:8123/api/demo/page?pageNum=1&pageSize=5`                           |
 | Demo 删除示例     | `DELETE http://localhost:8123/api/demo/delete`，body `{"ids":[1,2,3]}`                |
 | Demo 异常示例     | `http://localhost:8123/api/demo/exception/biz?id=999`、`/wrap`、`/unexpected?index=99` |
+| 当前登录用户        | `GET http://localhost:8123/api/user/get/login`（需先调用 `/api/user/login`，携带 Session Cookie） |
+| 用户注销          | `POST http://localhost:8123/api/user/logout`（携带 Session Cookie） |
+| 脱敏用户查询        | `GET http://localhost:8123/api/user/get/vo/{id}`、`/api/user/list/page/vo?pageNum=1&pageSize=10`（需登录） |
 
 ## 六、依赖清单（pom.xml）
 
@@ -314,6 +359,7 @@ zh-ai-code-mpther
 | `mybatis-flex-spring-boot4-starter`   | 1.11.8           | compile           | MyBatis-Flex 持久层（Spring Boot 4 专用 starter，传递 `mybatis-spring:4.0.0`）                  |
 | `mybatis-flex-codegen`                | 1.11.8           | compile           | 代码生成模块，仅 `generator` 包使用                                                              |
 | `spring-boot-starter-jdbc`            | 4.1.2（parent 管理） | compile           | 提供 `DataSourceAutoConfiguration` + `spring-jdbc` + `spring-tx`，MyBatis-Flex 自动配置的前置条件 |
+| `spring-boot-starter-aspectj`         | 4.1.2（parent 管理） | compile           | AOP 支持（传递 `spring-aop` + `aspectjweaver`），即 Boot 3 的 `spring-boot-starter-aop`              |
 | `HikariCP`                            | Boot 管理          | compile           | 数据库连接池（生成器单次元数据连接）                                                                    |
 | `springdoc-openapi-starter-webmvc-ui` | 3.2.0            | compile           | OpenAPI 元数据 + 原生 UI                                                                   |
 | `knife4j-openapi3-ui`                 | 4.5.0            | compile           | Knife4j 前端静态资源                                                                        |

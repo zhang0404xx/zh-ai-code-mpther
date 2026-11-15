@@ -3,7 +3,7 @@ package com.zh.zhaicodempther.controller;
 import com.zh.zhaicodempther.common.PageQuery;
 import com.zh.zhaicodempther.common.PageResult;
 import com.zh.zhaicodempther.common.Result;
-import com.zh.zhaicodempther.model.UserVO;
+import com.zh.zhaicodempther.model.vo.UsersVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -31,8 +31,8 @@ import java.util.stream.IntStream;
 public class UsersController {
 
     /** 假数据：30 条用户 */
-    private static final List<UserVO> MOCK_USERS = IntStream.rangeClosed(1, 30)
-            .mapToObj(i -> new UserVO(
+    private static final List<UsersVO> MOCK_USERS = IntStream.rangeClosed(1, 30)
+            .mapToObj(i -> new UsersVO(
                     (long) i,
                     "用户" + i,
                     "user" + i + "@example.com",
@@ -50,12 +50,12 @@ public class UsersController {
                     """
     )
     @GetMapping("/page")
-    public Result<PageResult<UserVO>> page(
+    public Result<PageResult<UsersVO>> page(
             @ParameterObject PageQuery query,
             @Parameter(description = "用户名关键字，模糊匹配", example = "用户1")
             @RequestParam(required = false) String keyword) {
 
-        List<UserVO> filtered = (keyword == null || keyword.isBlank())
+        List<UsersVO> filtered = (keyword == null || keyword.isBlank())
                 ? MOCK_USERS
                 : MOCK_USERS.stream()
                         .filter(user -> user.name().contains(keyword.trim()))

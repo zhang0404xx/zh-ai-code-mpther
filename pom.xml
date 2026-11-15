@@ -79,6 +79,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
         </dependency>
+        <!-- AOP（Spring Boot 4 中 spring-boot-starter-aop 已更名为 spring-boot-starter-aspectj） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aspectj</artifactId>
+        </dependency>
 
 
         <!-- springdoc-openapi (Spring Boot 4 需 3.x 版本) -->
