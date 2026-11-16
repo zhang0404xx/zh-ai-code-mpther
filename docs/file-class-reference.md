@@ -1,9 +1,9 @@
 # 项目文件与类说明
 
 > 本文件说明项目目录结构、各文件职责、类与 Bean 的职责边界，以及配置项与对外端点。
-> **维护约定**：新增/删除/重命名文件、新增类或 Bean、调整配置项与端点时，同步更新本文件，并在 [changelog.md](changelog.md) 记录变更。
+> **维护约定**：新增/删除/重命名文件、新增类或 Bean、调整配置项与端点时，同步更新本文件，并在 [changelog.md](changelog.md) 记录变更；若有功能 / 链路新增，同步更新 [project-guide.md](project-guide.md)（无新增则不改）。
 >
-> 最后更新：2026-11-13
+> 最后更新：2026-11-16
 
 ## 一、技术栈
 
@@ -14,10 +14,11 @@
 | Web      | `spring-boot-starter-webmvc`（Boot 4 起不再叫 `-web`，且**内置 validation**）                   |
 | 构建       | Maven Wrapper（Maven 3.10.0）                                                           |
 | 数据库驱动    | `mysql-connector-j`（`runtime`）                                                        |
-| 持久层      | MyBatis-Flex 1.11.0（`mybatis-flex-spring-boot3-starter`），代码生成用 `mybatis-flex-codegen` |
+| 持久层      | MyBatis-Flex 1.11.8（`mybatis-flex-spring-boot4-starter`），代码生成用 `mybatis-flex-codegen` |
 | 连接池      | HikariCP（版本由 Boot 管理）                                                                 |
 | 工具库      | Hutool 5.8.25                                                                         |
 | 接口文档     | springdoc-openapi 3.2.0 + Knife4j UI 4.5.0                                            |
+| AI 框架    | LangChain4j 1.23.0（Spring Boot 4 starter `1.23.0-beta33`，OpenAI 兼容协议 + `@AiService`）     |
 | 端口 / 上下文 | `8123` / `/api`                                                                       |
 
 ## 二、目录结构
@@ -30,11 +31,20 @@ zh-ai-code-mpther
 ├── docs/                               # 项目文档（本目录）
 │   ├── pitfalls.md                     # 踩坑记录
 │   ├── changelog.md                    # 变更记录
-│   └── file-class-reference.md         # 本文件
+│   ├── file-class-reference.md         # 本文件
+│   └── project-guide.md                # 项目讲解（功能串成完整链路）
 ├── sql/
 │   └── create_table.sql                # 建表脚本（user / app / chat_history）
 ├── src/main/java/com/zh/zhaicodempther/
 │   ├── ZhAiCodeMptherApplication.java  # 启动类
+│   ├── ai/
+│   │   ├── AiCodeGeneratorService.java        # AI 代码生成服务接口（LangChain4j AI Service）
+│   │   ├── AiCodeGeneratorServiceFactory.java # AI 服务工厂（@Configuration，注册代理 Bean）
+│   │   └── model/                             # 结构化输出结果（HtmlCodeResult / MultiFileCodeResult）
+│   ├── core/
+│   │   ├── AiCodeGeneratorFacade.java  # 代码生成门面（按类型生成 + 落盘，同步 / 流式两个入口）
+│   │   ├── CodeFileSaver.java          # 生成代码落盘（tmp/code_output/{bizType}_{雪花ID}）
+│   │   └── CodeParser.java             # 流式文本解析（Markdown 代码块 → HtmlCodeResult / MultiFileCodeResult）
 │   ├── annotation/
 │   │   └── AuthCheck.java              # 权限校验注解
 │   ├── aop/
@@ -74,9 +84,13 @@ zh-ai-code-mpther
 │   └── generator/
 │       └── MyBatisFlexGenerator.java   # MyBatis-Flex 代码生成器（main 直接运行）
 ├── src/main/resources/
-│   └── application.yml                 # 应用配置
+│   ├── application.yml                 # 应用配置
+│   └── prompt/                         # AI 系统提示词（html / multi-file 两份）
 └── src/test/java/com/zh/zhaicodempther/
-    └── ZhAiCodeMptherApplicationTests.java # 上下文加载测试
+    ├── ZhAiCodeMptherApplicationTests.java # 上下文加载测试
+    ├── core/AiCodeGeneratorFacadeTest.java # 门面端到端测试（同步 / 流式生成 + 落盘，真实调用 DeepSeek）
+    ├── core/AiCodeGeneratorFacadeStreamTest.java # 门面流式单元测试（Mock AI 服务，校验透传 / 解析落盘 / 异常）
+    └── ai/AiCodeGeneratorServiceTest.java  # AI 生成测试（真实调用 DeepSeek）
 ```
 
 ## 三、类与 Bean 清单
@@ -195,7 +209,8 @@ zh-ai-code-mpther
   `GET /api/user/getInfo/{id}`、`GET /api/user/page`（参数为 `Page<User>`）
 - **登录相关接口**（返回 `Result`）：`POST /api/user/register`、`POST /api/user/login`（成功后写入 Session
   `USER_LOGIN_STATE`）、`GET /api/user/get/login`（读取 Session 登录态 → 按 id 查库 → 返回脱敏 `LonginUserVo`；未登录返回
-  `UNAUTHORIZED(40100)`）、`POST /api/user/logout`（移除 Session 登录态，返回 `Result<Boolean>`；未登录返回 `40100`）
+  `UNAUTHORIZED(40100)`）、`POST /api/user/logout`（移除 Session 登录态，返回 `Result<Boolean>`；未登录返回
+  `OPERATION_NOT_ALLOWED(10003)`）
 - **Service 链路**：`UserService#getLoginUser(HttpServletRequest)` 返回 `User` 实体，供其他业务复用；Controller 层再调用
   `loginUserVo` 脱敏
 - **权限**：CRUD 接口（`save` / `remove` / `update` / `list` / `getInfo` / `page`）均为 `@AuthCheck(mustRole = ADMIN)`；
@@ -306,6 +321,93 @@ zh-ai-code-mpther
 - **注意**：角色以数据库最新值为准（每次鉴权查一次库），改角色后无需重新登录；`private` 方法上的注解不生效；若将来出现
   非线性权限（如互斥角色），需把 `mustRole` 扩展为数组或改为权限点模型
 
+### 3.19 `AiCodeGeneratorService`（接口）与 `AiCodeGeneratorServiceFactory`（`@Configuration`）
+
+- **路径**：`ai/AiCodeGeneratorService.java`、`ai/AiCodeGeneratorServiceFactory.java`
+- **接口方法**：系统提示词均经 `@SystemMessage(fromResource = "prompt/xxx.txt")` 从 classpath 读取
+
+| 方法 | 返回类型 | 调用模型 | 说明 |
+|---|---|---|---|
+| `generateHtmlCode(String)` | `HtmlCodeResult` | `ChatModel` | 同步，结构化输出（见 3.20） |
+| `generateMultiFileCode(String)` | `MultiFileCodeResult` | `ChatModel` | 同步，结构化输出 |
+| `generateHtmlCodeStream(String)` | `Flux<String>` | `StreamingChatModel` | 流式，返回模型原始文本片段（Markdown 代码块），不解析 |
+| `generateMultiFileCodeStream(String)` | `Flux<String>` | `StreamingChatModel` | 流式，同上 |
+
+- **工厂**：注入 starter 自动装配的 `ChatModel`（`chat-model.*`）与 `StreamingChatModel`（`streaming-chat-model.*`），
+  `@Bean aiCodeGeneratorService()` 用 `AiServices.builder(...).chatModel(chatModel).streamingChatModel(streamingChatModel).build()`
+  生成接口代理，按方法返回类型选用模型；业务中直接 `@Resource AiCodeGeneratorService` 使用
+- **流式前提**：返回 `Flux<String>` 需 `langchain4j-reactor` 依赖；流式方法暂无调用方（仅测试类），结果未落盘
+- **注意**：`@SystemMessage` 必须用 `fromResource` 指定文件路径，写成 `value` 会把路径字符串当提示词原文（见 pitfalls P-24）；
+  接口未标 `@AiService`，避免与工厂重复注册；未配置 `api-key` 时无 `ChatModel` Bean，工厂会导致启动失败
+
+### 3.20 `HtmlCodeResult` / `MultiFileCodeResult`（结构化输出结果）
+
+- **路径**：`ai/model/HtmlCodeResult.java`、`ai/model/MultiFileCodeResult.java`
+- **职责**：作为 `AiCodeGeneratorService` 的返回类型，承载模型按 JSON 返回的代码
+
+| 类 | 字段 | 对应方法 |
+|---|---|---|
+| `HtmlCodeResult` | `htmlCode`、`description` | `generateHtmlCode` |
+| `MultiFileCodeResult` | `htmlCode`、`cssCode`、`jsCode`、`description` | `generateMultiFileCode` |
+
+- **写法**：Lombok `@Data` 普通类；类与字段标注 `dev.langchain4j.model.output.structured.Description`，描述文本会写进
+  LangChain4j 追加到 user 消息末尾的 JSON 格式说明（如 `"htmlCode": (HTML代码; type: string)`）
+- **机制**：LangChain4j 在 user 消息末尾追加 JSON 格式说明；`chat-model` 配置 `response-format: json_object`，接口层保证返回合法 JSON，
+  再由 LangChain4j 解析为 POJO
+- **注意**：系统提示词仍要求 Markdown 代码块加解释文字，与 JSON 指令存在语义冲突（见 pitfalls P-25）
+
+### 3.21 `CodeFileSaver`（生成代码落盘工具类）
+
+- **路径**：`core/CodeFileSaver.java`
+- **职责**：把 3.20 的结构化结果写成网页文件，返回保存目录 `File`；全部为静态方法，不注册 Bean
+
+| 方法 | 可见性 | 作用 |
+|---|---|---|
+| `saveHtmlCodeResult(HtmlCodeResult)` | `public` | 写 `index.html` |
+| `saveMultiFileCodeResult(MultiFileCodeResult)` | `public` | 写 `index.html` / `style.css` / `script.js` |
+| `buildUniqueDir(String bizType)` | `private` | 创建 `{根目录}/{bizType}_{雪花ID}`，`bizType` 为 `CodeGenTypeEnum#getValue()` |
+| `writeToFile(dirPath, filename, content)` | `private` | Hutool `FileUtil.writeString`，UTF-8，`null` 内容写空文件 |
+
+- **根目录**：`AppConstant.CODE_OUTPUT_ROOT_DIR` = `System.getProperty("user.dir") + "/tmp/code_output"`，随启动目录变化；`tmp` 已被
+  `.gitignore` 忽略
+- **注意**：多文件名需与 `codegen-multi-file-system-prompt.txt` 中 `<link>` / `<script>` 引用一致；调用方为 3.22 门面类，旧目录不会自动清理
+
+### 3.22 `AiCodeGeneratorFacade`（代码生成门面）
+
+- **路径**：`core/AiCodeGeneratorFacade.java`
+- **职责**：门面模式，组合 `AiCodeGeneratorService`（3.19，生成）与 `CodeFileSaver`（3.21，落盘），调用方只需传提示词和类型
+- **注册方式**：`@Service`，`@Resource` 注入 `AiCodeGeneratorService` 代理 Bean
+
+| 方法 | 可见性 | 作用 |
+|---|---|---|
+| `generateAndSaveCode(String userMessage, CodeGenTypeEnum)` | `public` | 统一入口，按类型分发，返回保存目录 `File` |
+| `generateAndSaveHtmlCode(String)` | `private` | `generateHtmlCode` → `saveHtmlCodeResult` |
+| `generateAndSaveMultiFileCode(String)` | `private` | `generateMultiFileCode` → `saveMultiFileCodeResult` |
+| `generateAndSaveCodeStream(String userMessage, CodeGenTypeEnum)` | `public` | 流式统一入口，返回 `Flux<String>`（模型原始文本片段） |
+| `generateAndSaveHtmlCodeStream(String)` | `private` | `generateHtmlCodeStream` → 流结束后 `CodeParser.parseHtmlCode` → `saveHtmlCodeResult` |
+| `generateAndSaveMultiFileCodeStream(String)` | `private` | `generateMultiFileCodeStream` → 流结束后 `CodeParser.parseMultiFileCode` → `saveMultiFileCodeResult` |
+
+- **异常**：类型为 `null` → `BizException(BAD_REQUEST, "生成类型为空")`；`VUE_PROJECT` → `BAD_REQUEST`「不支持的生成类型」（同步 / 流式一致，
+  流式在调用时直接抛出，不经 `Flux`）
+- **流式机制**：`Flux.defer` 内新建 `StringBuilder`，`doOnNext` 拼接片段，`doOnComplete` 解析并落盘；落盘在流结束时触发，不订阅则不调用模型；
+  解析 / 保存异常转为 `onError`
+- **注意**：同步调用阻塞（实测多文件约 10 s）；暂无 HTTP 接口调用，仅测试类使用
+- **测试**：`AiCodeGeneratorFacadeTest` 真实调用 DeepSeek；`AiCodeGeneratorFacadeStreamTest` 用 Mockito 模拟流式片段，不依赖模型与 api-key
+
+### 3.23 `CodeParser`（流式文本解析工具类）
+
+- **路径**：`core/CodeParser.java`
+- **职责**：把流式拼接后的 Markdown 文本解析为 3.20 的结构化结果；全部为静态方法，不注册 Bean
+
+| 方法 | 可见性 | 作用 |
+|---|---|---|
+| `parseHtmlCode(String)` | `public` | 取首个 ```` ```html ```` 块为 `htmlCode`，无该块时整段文本作为 `htmlCode` |
+| `parseMultiFileCode(String)` | `public` | 分别取 ```` ```html ```` / ```` ```css ```` / ```` ```js ````（或 `javascript`）块，缺失字段为 `null`（落盘时写空文件） |
+| `extractCode(content, pattern)` | `private` | 返回首个匹配代码块内容（`trim`） |
+| `extractDescription(content)` | `private` | 剥离全部代码块后的剩余文字作为 `description` |
+
+- **注意**：依赖系统提示词要求的代码块语言标记；提示词改为 JSON 输出或改语言标记时需同步调整正则（见 pitfalls P-25 第 1 点）
+
 ## 四、application.yml 配置项
 
 | 配置项 | 值 | 作用 |
@@ -326,6 +428,14 @@ zh-ai-code-mpther
 | `zh.cors.exposed-headers` | 空 | 前端可读的自定义响应头 |
 | `zh.cors.allow-credentials` | `false` | 是否允许携带 Cookie |
 | `zh.cors.max-age` | `3600` | 预检结果缓存（秒） |
+| `langchain4j.open-ai.chat-model.base-url` | `https://api.deepseek.com` | 仅 `application-local.yml`；DeepSeek 兼容 OpenAI 协议 |
+| `langchain4j.open-ai.chat-model.api-key` | `${DEEPSEEK_API_KEY:your-deepseek-api-key}` | 仅 `application-local.yml`；配置后才创建 `ChatModel` Bean，占位值需替换为真实 key |
+| `langchain4j.open-ai.chat-model.model-name` | `deepseek-flash` | 模型名（DeepSeek-V4.1-Flash，默认开启思考模式；旧名 `deepseek-chat` 已停用） |
+| `langchain4j.open-ai.chat-model.max-tokens` | `8192` | 单次输出 token 上限 |
+| `langchain4j.open-ai.chat-model.log-requests` / `log-responses` | `true` | 打印模型请求 / 响应（本地调试用） |
+| `langchain4j.open-ai.chat-model.response-format` | `json_object` | 请求体带 `response_format: {type: json_object}`，接口层保证输出合法 JSON（结构化输出用） |
+| `langchain4j.open-ai.chat-model.strict-json-schema` | `true` | 仅 `response-format: json_schema` 时生效，配合 `json_object` 无效果 |
+| `langchain4j.open-ai.streaming-chat-model.*` | 同 `chat-model`（不含 `response-format` / `strict-json-schema`），另有 `max-retries: 5` | 流式模型 `StreamingChatModel`，供 `*Stream` 方法使用；不配 `response-format`，流式输出原始文本 |
 
 **不存在的配置**：`knife4j.*`（当前为纯 UI 模式，写了也不生效，见 pitfalls P-02）
 
@@ -363,6 +473,9 @@ zh-ai-code-mpther
 | `HikariCP`                            | Boot 管理          | compile           | 数据库连接池（生成器单次元数据连接）                                                                    |
 | `springdoc-openapi-starter-webmvc-ui` | 3.2.0            | compile           | OpenAPI 元数据 + 原生 UI                                                                   |
 | `knife4j-openapi3-ui`                 | 4.5.0            | compile           | Knife4j 前端静态资源                                                                        |
+| `langchain4j-open-ai-spring-boot4-starter` | `${langchain4j.version}` = 1.23.0-beta33 | compile | OpenAI 兼容协议模型自动配置（传递 `langchain4j-open-ai:1.23.0`、`langchain4j-core`、Boot 4 RestClient HTTP 客户端）；未配置 `langchain4j.open-ai.*` 时不创建模型 Bean |
+| `langchain4j-spring-boot4-starter`    | `${langchain4j.version}` = 1.23.0-beta33 | compile | 声明式 `@AiService` 自动配置，传递 `langchain4j:1.23.0` 核心                                     |
+| `langchain4j-reactor`                 | `${langchain4j.version}` = 1.23.0-beta33 | compile | Reactor 适配，AI Service 方法可返回 `Flux<String>`（流式输出）                                     |
 
 ## 七、构建环境约定（本机）
 

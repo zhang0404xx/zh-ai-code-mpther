@@ -1,0 +1,22 @@
+# LangChain4j（DeepSeek 兼容 OpenAI 协议，走 langchain4j-open-ai-spring-boot4-starter）
+# api-key 优先读环境变量 DEEPSEEK_API_KEY；未设置时使用占位值，需替换为真实 key 才能调用模型
+langchain4j:
+  open-ai:
+    chat-model:
+      base-url: https://api.deepseek.com
+      api-key: sk-642e8bc9bacd4bb4b1131b516d56d47d
+      model-name: deepseek-flash
+      max-tokens: 8192
+      log-requests: true
+      log-responses: true
+      strict-json-schema: true
+      response-format: json_object
+      max-retries: 5
+    streaming-chat-model:
+      base-url: https://api.deepseek.com
+      api-key: sk-642e8bc9bacd4bb4b1131b516d56d47d
+      model-name: deepseek-flash
+      max-tokens: 8192
+      log-requests: true
+      log-responses: true
+      max-retries: 5

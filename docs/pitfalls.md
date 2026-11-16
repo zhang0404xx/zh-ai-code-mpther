@@ -3,7 +3,7 @@
 > 记录本项目（`zh-ai-code-mpther`）在搭建与开发过程中遇到的真实问题、根因与解决方式。
 > **维护约定**：遇到新坑、或验证发现旧结论不再成立时，在本文件新增/修正章节，并同步更新 [changelog.md](changelog.md)。
 >
-> 最后更新：2026-11-13（补充 P-09 AOP starter 更名；新增 P-23）
+> 最后更新：2026-11-16（新增 P-24 `@SystemMessage` 的 `value` 与 `fromResource`；新增 P-25 结构化输出与提示词格式冲突；P-25 补充流式解析对代码块标记的依赖）
 
 ## 索引
 
@@ -32,6 +32,8 @@
 | P-21 | Spring Boot 4 下 Mapper Bean 不存在（starter 版本与 JDBC 依赖） | 依赖/启动 |
 | P-22 | `QueryWrapper` 字符串列名写成下划线，报 `Unknown column 'user_account'` | 持久层   |
 | P-23 | Hutool `JSONUtil` 序列化 record 得到 `{}`，日志切面返回值为空              | 日志    |
+| P-24 | `@SystemMessage(value = "prompt/x.txt")` 把路径当提示词原文发送          | AI 提示词 |
+| P-25 | 结构化输出要求 JSON，系统提示词却要求 Markdown 代码块                       | AI 输出解析 |
 
 ---
 
@@ -191,10 +193,14 @@ $env:JAVA_HOME='D:\Java\jdk21'
    `spring-boot-starter-aspectj`，`spring-boot-starter-aop` 在 4.1.2 的 BOM 中已不存在（照搬 Boot 3 教程会报缺少版本号）。
 2. **内置 validation**：`spring-boot-starter-webmvc` 已传递引入 `spring-boot-validation`（含 `hibernate-validator 9.1.5` + `jakarta.validation-api 3.1.1`），因此 `@Valid` / `@NotBlank` 开箱可用，**不需要**再单独引 `spring-boot-starter-validation`。
 3. **Jackson 版本**：Boot 4 主用 Jackson 3（`tools.jackson.core:jackson-databind:3.1.7`），同时传递 Jackson 2；Java `record` 序列化正常。
+4. **LangChain4j starter 后缀**：Boot 4 必须用 `langchain4j-*-spring-boot4-starter`（如 `langchain4j-open-ai-spring-boot4-starter`、
+   `langchain4j-spring-boot4-starter`）；网上教程常见的 `langchain4j-*-spring-boot-starter` 只支持 Boot 3.5+，在 Boot 4 下会启动报错
+   （见 langchain4j issue #4268）。starter 版本带 `-betaNN` 后缀（如 `1.23.0-beta33`），传递的核心库为同主版本正式版（`1.23.0`），属正常现象。
 
 **验证方式**：
 ```powershell
 .\mvnw.cmd -B dependency:tree | Select-String "validation|jackson-databind"
+.\mvnw.cmd -B dependency:tree "-Dincludes=dev.langchain4j"   # 应只出现 spring-boot4 后缀的 starter
 ```
 
 ---
@@ -530,3 +536,55 @@ queryWrapper.eq(User::getUserAccount, userAccount);
 `JSONUtil` / `BeanUtil.beanToMap`。切面只作用于 `public` 方法，`HealthController#check`（`private`）不会记日志，见 P-13。
 
 **重新评估条件**：Hutool 升级到支持 record 的版本（如 6.x）后可重新评估，但仍建议与接口共用 Jackson。
+
+---
+
+## P-24 `@SystemMessage(value = "prompt/x.txt")` 把路径当提示词原文发送
+
+**现象**：`AiCodeGeneratorService` 用 `@SystemMessage(value = "prompt/codegen-html-system-prompt.txt")`，编译、启动都正常，
+但模型收到的系统消息只是这串路径文本，生成结果不遵循提示词约定。
+
+**根因**：LangChain4j 的 `@SystemMessage.value` 是提示词**模板原文**；读取 classpath 文件需用 `fromResource` 属性。
+
+**解决**：
+```java
+@SystemMessage(fromResource = "prompt/codegen-html-system-prompt.txt")
+```
+
+**验证方式**：`log-requests: true` 下调用一次接口，请求日志中 `system` 消息应为提示词文件全文而非路径。
+
+**适用边界**：`@UserMessage` 同理（同样有 `fromResource`）；路径相对 classpath 根，不加 `classpath:` 前缀。
+
+---
+
+## P-25 结构化输出要求 JSON，系统提示词却要求 Markdown 代码块
+
+**现象**：`AiCodeGeneratorService` 返回类型改为 `HtmlCodeResult` / `MultiFileCodeResult` 后，测试通过，但响应日志显示
+模型输出格式不稳定：单文件用例返回裸 JSON，多文件用例把 JSON 包在 ```` ```json ```` 代码块里。
+
+**根因**：
+- 未配置 `response-format` 时，LangChain4j 的结构化输出只是在 user 消息末尾追加
+  `You must answer strictly in the following JSON format: {...}`，属于**提示词约束**，不是接口层强制。
+- `prompt/codegen-*-system-prompt.txt` 仍要求「输出 ```` ```html ```` 等代码块，可在代码块之外添加解释文字」，与 JSON
+  指令冲突，模型选哪条不确定。
+
+**当前状态**：已缓解。`application-local.yml` 的 `chat-model` 配置 `response-format: json_object` 后，请求体携带
+`response_format: {type: json_object}`，实测两个用例的响应均为裸 JSON（无代码块包裹）。系统提示词中的「代码块 + 解释文字」
+要求仍未修改，两者仍有语义冲突。
+
+**建议**：
+1. 把两份系统提示词的「输出格式」段落改为按 JSON 字段返回，去掉「代码块 + 解释文字」的要求。注意：流式方法
+   `generate*CodeStream` 复用同一份提示词且依赖 Markdown 代码块输出，改提示词前需先拆分同步 / 流式提示词。门面流式落盘由
+   `CodeParser` 按 ```` ```html ```` / ```` ```css ```` / ```` ```js ````（`javascript`）标记提取代码，标记不匹配时多文件对应文件写为空、
+   单文件把整段文本（含解释文字）写入 `index.html`，且不报错。
+2. 测试断言补充字段非空（如 `assertNotNull(result.getHtmlCode())`），避免字段为空也通过。
+3. `strict-json-schema: true` 只在 `response-format: json_schema` 时起作用，配合 `json_object` 无效果；DeepSeek 文档的 JSON
+   Output 使用 `json_object` 模式，且要求提示词含 "json" 字样（LangChain4j 追加的格式说明已满足）。
+4. `streaming-chat-model` 有意不配置 `response-format`：流式方法返回 `Flux<String>` 原始文本，LangChain4j 不追加 JSON 格式说明，
+   提示词中也无 "json" 字样；开启 `json_object` 只会得到转义后的 JSON 片段，且可能不满足 DeepSeek 的提示词要求。
+
+**验证方式**：`log-requests/log-responses: true` 下运行 `AiCodeGeneratorServiceTest`，检查响应体 `content` 是否为可直接解析的
+JSON。流式解析侧：`AiCodeGeneratorFacadeStreamTest`（Mock）用固定片段校验 `CodeParser` 与落盘逻辑，**无法发现提示词变化**；
+改提示词后需运行 `AiCodeGeneratorFacadeTest` 的两个流式用例（真实调用），并检查落盘文件非空、首行为代码。
+
+**重新评估条件**：系统提示词改为 JSON 输出格式之后，本条可关闭。

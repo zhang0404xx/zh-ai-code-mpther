@@ -1,11 +1,146 @@
 # 变更记录
 
 > 记录本项目的所有变更（遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，日期格式 `YYYY-MM-DD`）。
-> **维护约定**：任何依赖、配置、类结构、接口的增删改，都在本文件对应日期下新增条目，并同步更新 [file-class-reference.md](file-class-reference.md)；若涉及问题排查，另记入 [pitfalls.md](pitfalls.md)。
+> **维护约定**：任何依赖、配置、类结构、接口的增删改，都在本文件对应日期下新增条目，并同步更新 [file-class-reference.md](file-class-reference.md)；若涉及问题排查，另记入 [pitfalls.md](pitfalls.md)；若有功能 / 链路新增，同步更新 [project-guide.md](project-guide.md)（无新增则不改）。
 >
-> 最后更新：2026-11-13
+> 最后更新：2026-11-16
 
 ## [未发布]
+
+### 新增（Added，2026-11-16）
+
+#### AI 代码生成服务工厂
+
+- `ai/AiCodeGeneratorServiceFactory.java`：改为 `@Configuration`，注入自动装配的 `ChatModel`，`@Bean aiCodeGeneratorService()`
+  通过 `AiServices.builder(AiCodeGeneratorService.class).chatModel(chatModel).build()` 创建 AI Service 代理
+
+#### AI 结构化输出
+
+- `ai/model/HtmlCodeResult.java`：新增单文件生成结果（Lombok `@Data`），字段 `htmlCode` / `description`
+- `ai/model/MultiFileCodeResult.java`：新增多文件生成结果，字段 `htmlCode` / `cssCode` / `jsCode` / `description`
+- 两个类及其字段均标注 LangChain4j `@Description`，描述文本会进入模型收到的 JSON 格式说明
+
+#### 生成代码落盘
+
+- `core/CodeFileSaver.java`：新增代码文件保存器（静态工具类），根目录取 `AppConstant.CODE_OUTPUT_ROOT_DIR`（`user.dir/tmp/code_output`，
+  `tmp` 已被 `.gitignore` 忽略）
+  - `saveHtmlCodeResult(HtmlCodeResult)`：写 `index.html`，返回所在目录 `File`
+  - `saveMultiFileCodeResult(MultiFileCodeResult)`：写 `index.html` / `style.css` / `script.js`（与多文件系统提示词约定的文件名一致）
+  - 每次保存新建唯一目录 `{bizType}_{雪花ID}`，`bizType` 取 `CodeGenTypeEnum` 的 `value`（`html` / `multi_file`）
+  - Hutool `FileUtil.writeString` 按 UTF-8 写入，字段为 `null` 时写空文件
+  - 由 `AiCodeGeneratorFacade` 调用（见下）
+
+#### 代码生成门面
+
+- `core/AiCodeGeneratorFacade.java`：新增门面类（`@Service`），组合「AI 生成」与「落盘」两个子系统，对外只暴露一个入口
+  - `generateAndSaveCode(String userMessage, CodeGenTypeEnum)`：按类型分发，`HTML` → `generateHtmlCode` + `saveHtmlCodeResult`，
+    `MULTI_FILE` → `generateMultiFileCode` + `saveMultiFileCodeResult`，返回保存目录 `File`
+  - 类型为 `null` 抛 `BizException(BAD_REQUEST, "生成类型为空")`；`VUE_PROJECT` 暂不支持，抛 `BAD_REQUEST`
+  - 保存后 `info` 日志输出目录绝对路径
+- `src/test/.../core/AiCodeGeneratorFacadeTest.java`：新增端到端测试（真实调用 DeepSeek），`generateAndSaveCode` 用多文件模式生成并断言
+  `index.html` 已落盘；`testGenerateAndSaveCode` 用 HTML 模式生成，断言返回目录非 null
+
+#### AI 流式输出
+
+- `pom.xml`：新增 `dev.langchain4j:langchain4j-reactor`（`${langchain4j.version}`），使 AI Service 方法可返回 `Flux<String>`
+- `AiCodeGeneratorService`：新增 `Flux<String> generateHtmlCodeStream(String)` / `Flux<String> generateMultiFileCodeStream(String)`，
+  分别复用 HTML / 多文件系统提示词；流式不做结构化解析，返回模型原始文本片段（Markdown 代码块）
+- `AiCodeGeneratorServiceFactory`：`AiServices.builder` 增加 `.streamingChatModel(streamingChatModel)`；同一代理中返回 POJO 的方法
+  走 `ChatModel`，返回 `Flux` 的方法走 `StreamingChatModel`
+- `streaming-chat-model` 不配置 `response-format`：流式结果为原始文本，且 LangChain4j 不追加 JSON 格式说明，开启 `json_object` 只会得到
+  JSON 片段（见 [pitfalls.md](pitfalls.md) P-25 第 4 点）
+- `AiCodeGeneratorServiceTest`：新增 `generateHtmlCodeStream` / `generateMultiFileCodeStream`，`collectList().block()` 收集片段，
+  断言拼接结果非空
+- 流式结果由门面解析落盘（见下「流式生成落盘」）；暂无 SSE 接口
+
+#### 流式生成落盘
+
+- `core/CodeParser.java`：新增代码解析器（静态工具类），按 Markdown 代码块语言标记提取代码
+  - `parseHtmlCode(String)` → `HtmlCodeResult`：取首个 ```` ```html ```` 块；无该块时整段文本作为 `htmlCode`
+  - `parseMultiFileCode(String)` → `MultiFileCodeResult`：分别取 ```` ```html ```` / ```` ```css ```` / ```` ```js ````（兼容
+    `javascript`）块，缺失字段为 `null`
+  - `description` 取剥离全部代码块后剩余的说明文字
+- `AiCodeGeneratorFacade`：新增 `Flux<String> generateAndSaveCodeStream(String userMessage, CodeGenTypeEnum)`，类型分发与异常同
+  `generateAndSaveCode`；片段原样透传给下游，`doOnNext` 拼接，`doOnComplete` 时经 `CodeParser` 封装为 `HtmlCodeResult` /
+  `MultiFileCodeResult` 并调用 `CodeFileSaver` 保存；`Flux.defer` 保证每次订阅使用独立拼接缓冲；解析 / 保存异常以 `onError` 传给订阅方
+- `AiCodeGeneratorFacadeTest`：新增 `generateAndSaveHtmlCodeStream` / `generateAndSaveMultiFileCodeStream`，`collectList().block()`
+  等待流结束，断言拼接结果非空
+- `src/test/.../core/AiCodeGeneratorFacadeStreamTest.java`：新增门面流式单元测试（`MockitoExtension` 模拟 `AiCodeGeneratorService`，
+  不调用模型），共 5 例：HTML / 多文件片段原样透传且落盘内容与代码块一致（代码块标记跨片段拆分）、流异常时错误透传且不落盘、
+  不订阅不调用 AI 服务、类型为 `null` 抛 `BizException`；测试新建的输出目录在 `@AfterEach` 中删除
+- 文档：`project-guide.md` 5.1 的「当前调用入口」「运行测试」补充该测试类；[pitfalls.md](pitfalls.md) P-25 补充 `CodeParser` 对代码块
+  标记的依赖，以及 Mock 测试无法发现提示词变化、改提示词后需跑真实流式用例
+
+#### 项目讲解文档
+
+- `docs/project-guide.md`：新增项目讲解，按「通用请求链路 → 注册 / 登录 / 鉴权 / 注销主线 → AI 代码生成链路」串联现有功能，
+  附 PowerShell 端到端演示脚本、未打通环节（应用 / 对话历史 / AI 接口）与现存问题清单
+- `docs/file-class-reference.md`：目录结构登记 `project-guide.md`；3.10 注销未登录返回码由 `40100` 更正为 `10003`
+  （与 `UserServiceImpl#userLogout` 的 `OPERATION_NOT_ALLOWED` 一致）
+- 文档维护约定：`project-guide.md` 纳入 docs 同步范围（共四份），有功能 / 链路新增才更新，无新增不改
+
+### 变更（Changed，2026-11-16）
+
+- `AiCodeGeneratorService`：`generateHtmlCode` 返回类型 `String` → `HtmlCodeResult`，`generateMultiFileCode` 返回类型
+  `String` → `MultiFileCodeResult`；LangChain4j 据返回类型在 user 消息末尾追加 `You must answer strictly in the following JSON
+  format: {...}`，再把模型输出的 JSON 解析为 POJO（当前未配置 `response-format`，靠提示词约束，风险见
+  [pitfalls.md](pitfalls.md) P-25）
+- `AiCodeGeneratorServiceTest`：两个用例改为接收 POJO，断言结果非 null
+- `application-local.yml`：`chat-model` 新增 `response-format: json_object`，请求体携带 `response_format: {type: json_object}`，
+  由 DeepSeek 接口层保证输出合法 JSON；同时写了 `strict-json-schema: true`，该项仅在 `json_schema` 模式下起作用，当前无效果
+
+### 修复（Fixed，2026-11-16）
+
+- `ai/AiCodeGeneratorService.java`：两处 `@SystemMessage(value = "prompt/...txt")` 改为 `fromResource`，修复系统提示词被当成
+  路径字符串原文发送的问题（见 [pitfalls.md](pitfalls.md) P-24）
+
+### 验证（Verified，2026-11-16）
+
+| 检查项 | 结果 |
+|---|---|
+| `mvnw spring-boot:run`（JDK 21） | `Started ZhAiCodeMptherApplication in 2.582 seconds`，`aiCodeGeneratorService` Bean 创建无报错 |
+| 验证后服务关闭 | 8123 端口已释放，Maven 父进程已停止 |
+| `mvnw -B test -Dtest=AiCodeGeneratorServiceTest`（结构化输出） | `Tests run: 2, Failures: 0`，耗时 28.34 s |
+| 请求日志 | 两个用例的 user 消息均追加 JSON 格式说明，字段与 `@Description` 文本一致 |
+| 响应日志 | 单文件用例返回裸 JSON；多文件用例返回 ```` ```json ```` 包裹的 JSON，均解析成功 |
+| `mvnw -B -q compile`（新增 `CodeFileSaver` 后） | 编译通过，退出码 0；未做落盘运行测试 |
+| 加 `response-format: json_object` 后再跑同一测试 | `Tests run: 2, Failures: 0`（34.05 s）；请求体含 `"response_format" : {"type" : "json_object"}`，两次响应 `content` 均以 `{` 开头、无代码块包裹 |
+| `mvnw -B test -Dtest=AiCodeGeneratorFacadeTest`（门面端到端） | `Tests run: 1, Failures: 0`（9.91 s）；生成 `tmp/code_output/multi_file_2122295850417446912/`，含 `index.html`（664 B）/ `style.css`（781 B）/ `script.js`（550 B）；8123 未被占用 |
+| 补充 HTML 用例后再跑 `AiCodeGeneratorFacadeTest` | `Tests run: 2, Failures: 0`（22.30 s）；生成 `multi_file_2122298963454984192/`（`index.html` 604 B / `style.css` 948 B / `script.js` 689 B）与 `html_2122299003808382976/`（`index.html` 1748 B）；8123 未被占用 |
+| `mvnw -B test "-Dtest=AiCodeGeneratorServiceTest#generateHtmlCodeStream+generateMultiFileCodeStream"`（流式） | `Tests run: 2, Failures: 0`（26.65 s）；`langchain4j-reactor:1.23.0-beta33` 下载成功；两次请求体均含 `"stream" : true`、无 `response_format`；8123 未被占用 |
+| `mvnw -B test "-Dtest=AiCodeGeneratorFacadeTest#generateAndSaveHtmlCodeStream+generateAndSaveMultiFileCodeStream"`（流式落盘） | `Tests run: 2, Failures: 0`（16.49 s）；日志「HTML 代码（流式）已保存」「多文件代码（流式）已保存」；生成 `html_2122351779901038592/`（`index.html` 1587 B）与 `multi_file_2122351799647821824/`（`index.html` 597 B / `style.css` 946 B / `script.js` 766 B），文件首行均为代码、无 ```` ``` ```` 残留；8123 未被占用 |
+| `mvnw -B test "-Dtest=AiCodeGeneratorFacadeStreamTest"`（流式单元测试，Mock） | `Tests run: 5, Failures: 0, Errors: 0`（8.07 s）；不调用 DeepSeek；8123 未被占用 |
+
+### 新增（Added，2026-11-15）
+
+#### LangChain4j 依赖
+
+- `pom.xml`：新增属性 `langchain4j.version=1.23.0-beta33`，两个 starter 共用
+- `pom.xml`：新增 `dev.langchain4j:langchain4j-open-ai-spring-boot4-starter`（OpenAI 兼容协议模型自动配置，传递
+  `langchain4j-open-ai:1.23.0` / `langchain4j-core:1.23.0` / `langchain4j-http-client-spring-boot4-restclient`）
+- `pom.xml`：新增 `dev.langchain4j:langchain4j-spring-boot4-starter`（`@AiService` 声明式自动配置，传递 `langchain4j:1.23.0`）
+- 选用 `-spring-boot4-starter` 后缀而非教程常见的 `-spring-boot-starter`，原因见 [pitfalls.md](pitfalls.md) P-09 第 4 点
+- 未配置 `langchain4j.open-ai.*.api-key` 时不创建 `ChatModel` Bean，应用照常启动
+
+#### LangChain4j DeepSeek 配置
+
+- `application-local.yml`（已被 `.gitignore` 忽略）：新增 `langchain4j.open-ai.chat-model.*` 与
+  `langchain4j.open-ai.streaming-chat-model.*`，`base-url=https://api.deepseek.com`、`model-name=deepseek-flash`、
+  `max-tokens=8192`、`log-requests/log-responses=true`
+- `api-key` 写为 `${DEEPSEEK_API_KEY:your-deepseek-api-key}`：优先读环境变量，未设置时为占位值（应用可启动，调用模型会鉴权失败）
+- `model-name` 由 `deepseek-chat` 改为 `deepseek-flash`（DeepSeek-V4.1-Flash）：`deepseek-chat` / `deepseek-reasoner` 已于
+  2026-07-24 停用；`deepseek-flash` 默认开启思考模式（`reasoning_effort=high`），思维链经 `reasoning_content` 返回
+
+### 验证（Verified，2026-11-15）
+
+| 检查项 | 结果 |
+|---|---|
+| `mvnw -B -DskipTests compile` | BUILD SUCCESS |
+| `mvnw -B -o dependency:tree -Dincludes=dev.langchain4j` | 只出现两个 `spring-boot4` starter，核心库均为 `1.23.0` |
+| `mvnw -B -o spring-boot:run` | `Started ZhAiCodeMptherApplication in 2.445 seconds`，无自动配置报错 |
+| `GET /api/health/check` | 200，`data:"ok"` |
+| 验证后服务关闭 | 8123 端口已释放，Maven 父 JVM 已停止 |
+| 加入 DeepSeek 配置后 `spring-boot:run --debug` | `Started ZhAiCodeMptherApplication in 2.341 seconds`；`OpenAiAutoConfiguration#openAiChatModel` / `#openAiStreamingChatModel` matched |
 
 ### 新增（Added，2026-11-13）
 

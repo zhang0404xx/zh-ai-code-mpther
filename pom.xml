@@ -28,6 +28,7 @@
     </scm>
     <properties>
         <java.version>21</java.version>
+        <langchain4j.version>1.23.0-beta33</langchain4j.version>
     </properties>
     <dependencies>
         <dependency>
@@ -97,6 +98,25 @@
             <groupId>com.github.xiaoymin</groupId>
             <artifactId>knife4j-openapi3-ui</artifactId>
             <version>4.5.0</version>
+        </dependency>
+
+        <!-- LangChain4j OpenAI 兼容协议模型 starter（Spring Boot 4 需使用 -spring-boot4-starter 后缀） -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai-spring-boot4-starter</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+        <!-- LangChain4j 声明式 AI Service（@AiService）自动配置，传递引入 langchain4j 核心 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-spring-boot4-starter</artifactId>
+            <version>${langchain4j.version}</version>
+        </dependency>
+        <!-- LangChain4j Reactor 适配：AI Service 方法可返回 Flux<String> 实现流式输出 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-reactor</artifactId>
+            <version>${langchain4j.version}</version>
         </dependency>
     </dependencies>
 
