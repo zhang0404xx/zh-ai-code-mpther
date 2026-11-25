@@ -3,7 +3,7 @@
 > 本文件说明项目目录结构、各文件职责、类与 Bean 的职责边界，以及配置项与对外端点。
 > **维护约定**：新增/删除/重命名文件、新增类或 Bean、调整配置项与端点时，同步更新本文件，并在 [changelog.md](changelog.md) 记录变更；若有功能 / 链路新增，同步更新 [project-guide.md](project-guide.md)（无新增则不改）。
 >
-> 最后更新：2026-11-16
+> 最后更新：2026-11-25
 
 ## 一、技术栈
 
@@ -43,8 +43,14 @@ zh-ai-code-mpther
 │   │   └── model/                             # 结构化输出结果（HtmlCodeResult / MultiFileCodeResult）
 │   ├── core/
 │   │   ├── AiCodeGeneratorFacade.java  # 代码生成门面（按类型生成 + 落盘，同步 / 流式两个入口）
-│   │   ├── CodeFileSaver.java          # 生成代码落盘（tmp/code_output/{bizType}_{雪花ID}）
-│   │   └── CodeParser.java             # 流式文本解析（Markdown 代码块 → HtmlCodeResult / MultiFileCodeResult）
+│   │   ├── handler/                    # 按类型的处理器（同类型的解析 + 保存合在一个类）
+│   │   │   └── HtmlCodeHandler.java / MultiFileCodeHandler.java
+│   │   ├── parser/                     # 解析器接口 + 解析执行器
+│   │   │   ├── CodeParser.java
+│   │   │   └── CodeParserExecutor.java         # 按类型选择解析器
+│   │   └── saver/                      # 文件保存模板 + 保存执行器
+│   │       ├── CodeFileSaverTemplate.java      # 保存模板（校验 → 建唯一目录 → 写文件）
+│   │       └── CodeFileSaverExecutor.java      # 按类型选择保存器（tmp/code_output/{bizType}_{雪花ID}）
 │   ├── annotation/
 │   │   └── AuthCheck.java              # 权限校验注解
 │   ├── aop/
@@ -57,9 +63,10 @@ zh-ai-code-mpther
 │   │   └── Result.java                 # 统一响应体
 │   ├── config/
 │   │   ├── CorsConfig.java              # 全局跨域配置
+│   │   ├── JsonConfig.java              # 全局 JSON 配置（Long 序列化为字符串）
 │   │   └── Knife4jConfig.java          # 接口文档配置
 │   ├── controller/
-│   │   ├── AppController.java          # 应用 CRUD 接口（生成）
+│   │   ├── AppController.java          # 应用业务接口（用户 6 个 + 管理员 4 个，均返回 Result）
 │   │   ├── ChatHistoryController.java  # 会话历史 CRUD 接口（生成）
 │   │   ├── DemoController.java         # 分页/删除/异常示例接口
 │   │   ├── HealthController.java       # 健康检查接口
@@ -76,6 +83,8 @@ zh-ai-code-mpther
 │   │   └── impl/                       # 三个 ServiceImpl（继承 ServiceImpl<Mapper, Entity>）
 │   ├── model/
 │   │   ├── UserVO.java                 # 用户视图对象（示例）
+│   │   ├── dto/                        # 请求对象（含 AppAddRequest / AppUpdateRequest / AppAdminUpdateRequest / AppQueryRequest）
+│   │   ├── vo/                         # 视图对象（含 AppVo）
 │   │   └── entity/                     # 实体（App / ChatHistory / User）
 │   ├── exception/
 │   │   ├── ErrorCode.java              # 错误码枚举
@@ -89,6 +98,7 @@ zh-ai-code-mpther
 └── src/test/java/com/zh/zhaicodempther/
     ├── ZhAiCodeMptherApplicationTests.java # 上下文加载测试
     ├── core/AiCodeGeneratorFacadeTest.java # 门面端到端测试（同步 / 流式生成 + 落盘，真实调用 DeepSeek）
+    ├── core/AiCodeGeneratorFacadeSaveTest.java   # 门面同步单元测试（Mock AI 服务，校验保存执行器落盘 / 空结果 / 空类型）
     ├── core/AiCodeGeneratorFacadeStreamTest.java # 门面流式单元测试（Mock AI 服务，校验透传 / 解析落盘 / 异常）
     └── ai/AiCodeGeneratorServiceTest.java  # AI 生成测试（真实调用 DeepSeek）
 ```
@@ -356,18 +366,24 @@ zh-ai-code-mpther
   再由 LangChain4j 解析为 POJO
 - **注意**：系统提示词仍要求 Markdown 代码块加解释文字，与 JSON 指令存在语义冲突（见 pitfalls P-25）
 
-### 3.21 `CodeFileSaver`（生成代码落盘工具类）
+### 3.21 代码保存器（`core/saver/CodeFileSaverTemplate` + `*CodeHandler`，模板方法 + 执行器）
 
-- **路径**：`core/CodeFileSaver.java`
-- **职责**：把 3.20 的结构化结果写成网页文件，返回保存目录 `File`；全部为静态方法，不注册 Bean
+- **职责**：把 3.20 的结构化结果写成网页文件，返回保存目录 `File`；均为普通类，不注册 Bean，执行器持有单例保存器
 
-| 方法 | 可见性 | 作用 |
-|---|---|---|
-| `saveHtmlCodeResult(HtmlCodeResult)` | `public` | 写 `index.html` |
-| `saveMultiFileCodeResult(MultiFileCodeResult)` | `public` | 写 `index.html` / `style.css` / `script.js` |
-| `buildUniqueDir(String bizType)` | `private` | 创建 `{根目录}/{bizType}_{雪花ID}`，`bizType` 为 `CodeGenTypeEnum#getValue()` |
-| `writeToFile(dirPath, filename, content)` | `private` | Hutool `FileUtil.writeString`，UTF-8，`null` 内容写空文件 |
+| 类 / 方法 | 作用 |
+|---|---|
+| `CodeFileSaverTemplate<T>#saveCode(T)`（`public final`） | 模板方法：`validateInput`（默认非空，`BAD_REQUEST`）→ `buildUniqueDir` → `saveFiles` |
+| `CodeFileSaverTemplate#buildUniqueDir()`（`protected final`） | 创建 `{根目录}/{bizType}_{雪花ID}`，`bizType` 为 `getCodeType().getValue()` |
+| `CodeFileSaverTemplate#writeToFile(dirPath, filename, content)`（`protected final`） | Hutool `FileUtil.writeString`，UTF-8，`null` 内容写空文件 |
+| `HtmlCodeHandler#saveFiles` | `HTML`，写 `index.html` |
+| `MultiFileCodeHandler#saveFiles` | `MULTI_FILE`，写 `index.html` / `style.css` / `script.js` |
+| `CodeFileSaverExecutor.executeSaver(Object, CodeGenTypeEnum)` | 按类型选保存器；类型为 `null` / `VUE_PROJECT` 抛 `BAD_REQUEST`；结果类型与枚举不符时抛 `ClassCastException` |
 
+- **处理器**：`HtmlCodeHandler` / `MultiFileCodeHandler`（位于 `core/handler/`）均为 `extends CodeFileSaverTemplate<T> implements CodeParser<T>`，同一类型的解析与保存在同一文件
+- **包划分**：`core/parser/` 放解析接口与解析执行器，`core/saver/` 放保存模板与保存执行器，`core/handler/` 放具体实现；
+  执行器字段声明为 `CodeParser<T>` / `CodeFileSaverTemplate<T>`，`execute*` 只依赖接口 / 模板；具体处理器只在字段初始化时 `new`，
+  故 `parser` / `saver` 仍在 import 层面引用 `handler`
+- **扩展**：新类型 = 新增一个 `XxxCodeHandler`（实现 `parseCode` / `getCodeType` / `saveFiles`），并在两个执行器的 `switch` 加分支
 - **根目录**：`AppConstant.CODE_OUTPUT_ROOT_DIR` = `System.getProperty("user.dir") + "/tmp/code_output"`，随启动目录变化；`tmp` 已被
   `.gitignore` 忽略
 - **注意**：多文件名需与 `codegen-multi-file-system-prompt.txt` 中 `<link>` / `<script>` 引用一致；调用方为 3.22 门面类，旧目录不会自动清理
@@ -375,38 +391,78 @@ zh-ai-code-mpther
 ### 3.22 `AiCodeGeneratorFacade`（代码生成门面）
 
 - **路径**：`core/AiCodeGeneratorFacade.java`
-- **职责**：门面模式，组合 `AiCodeGeneratorService`（3.19，生成）与 `CodeFileSaver`（3.21，落盘），调用方只需传提示词和类型
+- **职责**：门面模式，组合 `AiCodeGeneratorService`（3.19，生成）、`CodeParserExecutor`（3.23，解析）与 `CodeFileSaverExecutor`（3.21，落盘），调用方只需传提示词和类型
 - **注册方式**：`@Service`，`@Resource` 注入 `AiCodeGeneratorService` 代理 Bean
 
 | 方法 | 可见性 | 作用 |
 |---|---|---|
 | `generateAndSaveCode(String userMessage, CodeGenTypeEnum)` | `public` | 统一入口，按类型分发，返回保存目录 `File` |
-| `generateAndSaveHtmlCode(String)` | `private` | `generateHtmlCode` → `saveHtmlCodeResult` |
-| `generateAndSaveMultiFileCode(String)` | `private` | `generateMultiFileCode` → `saveMultiFileCodeResult` |
-| `generateAndSaveCodeStream(String userMessage, CodeGenTypeEnum)` | `public` | 流式统一入口，返回 `Flux<String>`（模型原始文本片段） |
-| `generateAndSaveHtmlCodeStream(String)` | `private` | `generateHtmlCodeStream` → 流结束后 `CodeParser.parseHtmlCode` → `saveHtmlCodeResult` |
-| `generateAndSaveMultiFileCodeStream(String)` | `private` | `generateMultiFileCodeStream` → 流结束后 `CodeParser.parseMultiFileCode` → `saveMultiFileCodeResult` |
+| `generateAndSaveHtmlCode(String)` | `private` | `generateHtmlCode` → `CodeFileSaverExecutor.executeSaver(result, HTML)` |
+| `generateAndSaveMultiFileCode(String)` | `private` | `generateMultiFileCode` → `CodeFileSaverExecutor.executeSaver(result, MULTI_FILE)` |
+| `generateAndSaveCodeStream(String userMessage, CodeGenTypeEnum)` | `public` | 流式统一入口：按类型选 `generate*CodeStream`（`Supplier`，订阅时才调用），返回 `Flux<String>`（模型原始文本片段） |
+| `processCodeStream(Flux<String>, CodeGenTypeEnum)` | `private` | 通用流处理：拼接片段，流结束后 `CodeParserExecutor` → `CodeFileSaverExecutor` |
 
 - **异常**：类型为 `null` → `BizException(BAD_REQUEST, "生成类型为空")`；`VUE_PROJECT` → `BAD_REQUEST`「不支持的生成类型」（同步 / 流式一致，
   流式在调用时直接抛出，不经 `Flux`）
 - **流式机制**：`Flux.defer` 内新建 `StringBuilder`，`doOnNext` 拼接片段，`doOnComplete` 解析并落盘；落盘在流结束时触发，不订阅则不调用模型；
-  解析 / 保存异常转为 `onError`
+  解析 / 保存异常被 `catch` 后记 `error` 日志，不传给订阅方
 - **注意**：同步调用阻塞（实测多文件约 10 s）；暂无 HTTP 接口调用，仅测试类使用
-- **测试**：`AiCodeGeneratorFacadeTest` 真实调用 DeepSeek；`AiCodeGeneratorFacadeStreamTest` 用 Mockito 模拟流式片段，不依赖模型与 api-key
+- **测试**：`AiCodeGeneratorFacadeTest` 真实调用 DeepSeek；`AiCodeGeneratorFacadeSaveTest` / `AiCodeGeneratorFacadeStreamTest` 用 Mockito 分别模拟同步结构化结果与流式片段，不依赖模型与 api-key
 
-### 3.23 `CodeParser`（流式文本解析工具类）
+### 3.23 代码解析器（`core/parser/CodeParser` + `*CodeHandler`，策略 + 执行器）
 
-- **路径**：`core/CodeParser.java`
-- **职责**：把流式拼接后的 Markdown 文本解析为 3.20 的结构化结果；全部为静态方法，不注册 Bean
+- **职责**：把流式拼接后的 Markdown 文本解析为 3.20 的结构化结果；不注册 Bean，执行器持有单例解析器
 
-| 方法 | 可见性 | 作用 |
-|---|---|---|
-| `parseHtmlCode(String)` | `public` | 取首个 ```` ```html ```` 块为 `htmlCode`，无该块时整段文本作为 `htmlCode` |
-| `parseMultiFileCode(String)` | `public` | 分别取 ```` ```html ```` / ```` ```css ```` / ```` ```js ````（或 `javascript`）块，缺失字段为 `null`（落盘时写空文件） |
-| `extractCode(content, pattern)` | `private` | 返回首个匹配代码块内容（`trim`） |
-| `extractDescription(content)` | `private` | 剥离全部代码块后的剩余文字作为 `description` |
+| 类 / 方法 | 作用 |
+|---|---|
+| `CodeParser<T>`（接口） | `parseCode(String)`；共享 `HTML` / `CSS` / `JS` / 任意代码块正则常量 |
+| `CodeParser#extractCode(content, pattern)`（`default`） | 返回首个匹配代码块内容（`trim`），无匹配返回 `null` |
+| `CodeParser#extractDescription(content)`（`default`） | 剥离全部代码块后的剩余文字作为 `description` |
+| `HtmlCodeHandler#parseCode` | 取首个 ```` ```html ```` 块为 `htmlCode`，无该块时整段文本作为 `htmlCode` |
+| `MultiFileCodeHandler#parseCode` | 分别取 ```` ```html ```` / ```` ```css ```` / ```` ```js ````（或 `javascript`）块，缺失字段为 `null`（落盘时写空文件） |
+| `CodeParserExecutor.executeParser(String, CodeGenTypeEnum)` | 按类型选解析器，返回 `Object`；类型为 `null` / `VUE_PROJECT` 抛 `BAD_REQUEST` |
 
 - **注意**：依赖系统提示词要求的代码块语言标记；提示词改为 JSON 输出或改语言标记时需同步调整正则（见 pitfalls P-25 第 1 点）
+
+### 3.24 `AppController`（`@RestController`）与 `AppService` / `AppServiceImpl`
+
+- **路径**：`controller/AppController.java`、`service/AppService.java`、`service/impl/AppServiceImpl.java`
+- **职责**：应用的创建、修改、删除、详情与分页查询；替换了生成器产出的裸 CRUD，均返回 `Result`
+
+| 接口 | 权限 | 入参 | 返回 | 规则 |
+|---|---|---|---|---|
+| `POST /api/app/add` | `@AuthCheck` | `AppAddRequest`（`initPrompt`） | `Result<Long>` | `initPrompt` 为空 `40000`；`userId` 取当前登录用户 |
+| `PUT /api/app/update` | `@AuthCheck` | `AppUpdateRequest`（`id` / `appName`） | `Result<Boolean>` | 只改 `appName`；不存在 `10001`，非本人 `40300` |
+| `DELETE /api/app/delete/{id}` | `@AuthCheck` | 路径 `id` | `Result<Boolean>` | 同上归属校验；逻辑删除 |
+| `GET /api/app/get/vo/{id}` | `@AuthCheck` | 路径 `id` | `Result<AppVo>` | 不存在 `10001` |
+| `GET /api/app/my/list/page/vo` | `@AuthCheck` | `AppQueryRequest`（仅用 `pageNum` / `pageSize` / `appName`） | `Result<PageResult<AppVo>>` | `pageSize > 20` 返回 `40000`；`userId` 固定为当前用户 |
+| `GET /api/app/good/list/page/vo` | `@AuthCheck` | 同上 | 同上 | `pageSize > 20` 返回 `40000`；`priority` 固定为 `AppConstant.GOOD_APP_PRIORITY`（99） |
+| `DELETE /api/app/admin/delete/{id}` | ADMIN | 路径 `id` | `Result<Boolean>` | 任意应用；不存在 `10001` |
+| `PUT /api/app/admin/update` | ADMIN | `AppAdminUpdateRequest`（`id` / `appName` / `cover` / `priority`） | `Result<Boolean>` | 三个字段全为 `null` 返回 `40000`；`null` 字段不更新 |
+| `GET /api/app/admin/list/page/vo` | ADMIN | `AppQueryRequest`（除时间外全部字段） | `Result<PageResult<AppVo>>` | 无 20 条限制，受 `PageQuery` 上限 100 约束 |
+| `GET /api/app/admin/get/vo/{id}` | ADMIN | 路径 `id` | `Result<AppVo>` | 不存在 `10001` |
+
+| Service 方法 | 作用 |
+|---|---|
+| `createApp(AppAddRequest, User)` | 校验 `initPrompt`；`appName` 取 prompt 前 `DEFAULT_APP_NAME_LENGTH`（12）字，`codeGenType` 暂固定 `multi_file`，`priority` 默认 `0` |
+| `getAppVo(App)` | 复制字段并按 `userId` 查创建者，经 `UserService#getUserVo` 脱敏 |
+| `getAppVoList(List<App>)` | `listByIds` 一次查出全部创建者再组装，避免 N+1 |
+| `getQueryWrapper(AppQueryRequest)` | `id` / `codeGenType` / `deployKey` / `priority` / `userId` 用 `eq`，`appName` / `cover` / `initPrompt` 用 `like`；值为空不参与；默认 `createTime` 倒序 |
+
+- **DTO / VO**：`AppQueryRequest extends PageQuery`，可直接以 `@ParameterObject` 绑定 Query 参数；`AppVo` 不含 `editTime` / `isDelete`，
+  附带 `UserVo user`
+- **注意**：条件列名全部使用方法引用（`App::getAppName`），走实体 `@Column` 驼峰映射，避免 P-22；未使用 `PageQuery.orderBy`
+- **注意**：用户编辑 / 管理员更新都写入 `editTime = now()`，`updateTime` 由数据库 `on update` 维护
+
+### 3.25 `JsonConfig`（`@Configuration`）
+
+- **路径**：`src/main/java/com/zh/zhaicodempther/config/JsonConfig.java`
+- **职责**：注册 `JsonMapperBuilderCustomizer`（`org.springframework.boot.jackson.autoconfigure`），向 Boot 自动配置的 Jackson 3
+  `JsonMapper` 添加 `SimpleModule`，`Long` / `long` 使用 `tools.jackson.databind.ser.std.ToStringSerializer`
+- **目的**：雪花 ID 超出 JS `Number` 安全整数（`2^53-1`），以数字返回会被前端四舍五入，回传后查不到数据（见 pitfalls P-26）
+- **影响范围**：所有接口响应中的 `Long` 字段（`id` / `userId` / 分页 `total` 等）均为字符串；`ControllerLogAspect` 注入同一
+  `ObjectMapper`，日志中的 `Long` 也显示为字符串；`Integer` 等其他数字类型不变
+- **注意**：反序列化不受影响，请求中字符串或数字形式的 id 均可绑定到 `Long`；前端若需对这些字段做数值运算须自行转换
 
 ## 四、application.yml 配置项
 
@@ -456,6 +512,8 @@ zh-ai-code-mpther
 | 当前登录用户        | `GET http://localhost:8123/api/user/get/login`（需先调用 `/api/user/login`，携带 Session Cookie） |
 | 用户注销          | `POST http://localhost:8123/api/user/logout`（携带 Session Cookie） |
 | 脱敏用户查询        | `GET http://localhost:8123/api/user/get/vo/{id}`、`/api/user/list/page/vo?pageNum=1&pageSize=10`（需登录） |
+| 应用（用户）        | `POST /api/app/add`、`PUT /api/app/update`、`DELETE /api/app/delete/{id}`、`GET /api/app/get/vo/{id}`、`/api/app/my/list/page/vo`、`/api/app/good/list/page/vo`（需登录，分页每页最多 20） |
+| 应用（管理员）       | `DELETE /api/app/admin/delete/{id}`、`PUT /api/app/admin/update`、`GET /api/app/admin/list/page/vo`、`/api/app/admin/get/vo/{id}`（需 admin） |
 
 ## 六、依赖清单（pom.xml）
 
@@ -499,5 +557,5 @@ $env:JAVA_HOME='D:\Java\jdk21'
 
 - `HealthController.check()` 改为 `public` 并返回 `Result.ok("ok")`
 - 确定错误码与 HTTP 状态的映射方案（当前全部 400，见 pitfalls P-16）
-- 业务层：生成器已覆盖实体 / Mapper / Service 骨架，Controller 与 DTO/VO 需按 `Result` + `PageQuery` 约定手写
+- 业务层：生成器已覆盖实体 / Mapper / Service 骨架，Controller 与 DTO/VO 需按 `Result` + `PageQuery` 约定手写（App 已完成，ChatHistory 待做）
 - 鉴权方案（若引入 JWT，需在 `Knife4jConfig` 增补 `SecurityScheme`）

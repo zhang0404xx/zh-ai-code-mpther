@@ -6,12 +6,12 @@
 > - 需要更新：新增 / 变更接口端点、新业务链路或主线环节打通（如 5.2 中的项）、鉴权规则变化、新增支撑能力、第七节问题被修复或新发现
 > - 不更新：仅类内部细节、依赖版本、配置项微调、纯排错记录——这些只改其他三份文档
 >
-> 最后更新：2026-11-16
+> 最后更新：2026-11-19
 
 ## 一、一句话说明
 
 `zh-ai-code-mpther` 是一个 **AI 零代码应用生成平台** 的后端：用户注册登录后，用自然语言描述需求，由大模型生成 HTML / 多文件网站代码。
-目前已完成「用户体系 + 权限 + 统一请求处理 + AI 代码生成能力」，**AI 能力尚未通过 HTTP 接口对外开放**（见第五节）。
+目前已完成「用户体系 + 权限 + 统一请求处理 + 应用管理 + AI 代码生成能力」，**AI 能力尚未通过 HTTP 接口对外开放**（见第五节）。
 
 | 维度 | 现状 |
 |---|---|
@@ -51,6 +51,7 @@ ai/           AiCodeGeneratorService（LangChain4j 代理）→ DeepSeek API
 | 横切 | `GlobalExceptionHandler` + `ErrorCode` + `BizException` + `ThrowUtils` | 异常统一转为 `Result` |
 | 公共 | `Result` / `PageQuery` / `PageResult` / `DeleteRequest` | 统一响应、分页、删除入参 |
 | 业务 | `UserController` → `UserServiceImpl` → `UserMapper` | 注册、登录、登录态、注销、用户查询 |
+| 业务 | `AppController` → `AppServiceImpl` → `AppMapper` | 应用创建、归属校验、精选 / 我的 / 管理员分页、`AppVo` 附带创建者 |
 | AI | `AiCodeGeneratorServiceFactory` → `AiCodeGeneratorService` → `HtmlCodeResult` / `MultiFileCodeResult` | 调 DeepSeek 生成代码，结果解析为 POJO |
 | AI | `AiCodeGeneratorFacade` → `CodeFileSaver` | 门面按类型调用生成并落盘到 `tmp/code_output/{bizType}_{雪花ID}/` |
 | 工具 | `MyBatisFlexGenerator` | 按表生成 entity / mapper / service / controller 骨架 |
@@ -145,9 +146,9 @@ sequenceDiagram
 
 | 注解写法 | 含义 | 当前使用位置 |
 |---|---|---|
-| 无注解 | 匿名可访问 | `register` / `login` / `get/login` / `logout`、Demo、Health、`/app/*`、`/chatHistory/*` |
-| `@AuthCheck` | 登录即可（默认 `mustRole = USER`） | `GET /user/get/vo/{id}`、`GET /user/list/page/vo` |
-| `@AuthCheck(mustRole = ADMIN)` | 仅管理员 | `/user/save`、`remove/{id}`、`update`、`list`、`getInfo/{id}`、`page` |
+| 无注解 | 匿名可访问 | `register` / `login` / `get/login` / `logout`、Demo、Health、`/chatHistory/*` |
+| `@AuthCheck` | 登录即可（默认 `mustRole = USER`） | `GET /user/get/vo/{id}`、`GET /user/list/page/vo`、`/app` 下非 `admin/` 的 6 个接口 |
+| `@AuthCheck(mustRole = ADMIN)` | 仅管理员 | `/user/save`、`remove/{id}`、`update`、`list`、`getInfo/{id}`、`page`；`/app/admin/*` 4 个接口 |
 
 判定规则（`UserRoleEnum`）：`USER=10`、`ADMIN=100`，**用户等级 ≥ 要求等级即放行**；数据库里出现未知角色值一律拒绝。
 
@@ -190,6 +191,27 @@ Invoke-RestMethod -Method Post "$base/user/logout" -WebSession $s
 
 把某用户设为管理员：数据库执行 `update user set userRole = 'admin' where userAccount = 'demo0001';`，无需重新登录。
 
+### 4.7 应用管理 `/api/app/*`
+
+登录后用户围绕「自己的应用」操作，管理员用 `admin/` 前缀接口管理任意应用：
+
+| 动作 | 用户接口（`@AuthCheck`） | 管理员接口（ADMIN） |
+|---|---|---|
+| 创建 | `POST /app/add`，`{"initPrompt"}` 必填 | — |
+| 修改 | `PUT /app/update`，只改 `appName`，仅本人 | `PUT /app/admin/update`，`appName` / `cover` / `priority` |
+| 删除 | `DELETE /app/delete/{id}`，仅本人 | `DELETE /app/admin/delete/{id}`，任意应用 |
+| 详情 | `GET /app/get/vo/{id}` | `GET /app/admin/get/vo/{id}` |
+| 分页 | `GET /app/my/list/page/vo`（自己的）、`GET /app/good/list/page/vo`（精选），只按 `appName` 查，每页 ≤ 20 | `GET /app/admin/list/page/vo`，除时间外任意字段，每页 ≤ 100（`PageQuery` 上限） |
+
+1. **创建**：`AppServiceImpl#createApp` 校验 `initPrompt` 非空 → `appName` 取 prompt 前 12 字、`codeGenType = multi_file`、`priority = 0`、
+   `userId = 当前用户` → `save`，返回雪花 id
+2. **归属校验**：用户修改 / 删除先查应用（不存在 `10001`），再比较 `app.userId` 与登录用户 id（不一致 `40300 只能操作自己的应用`）；
+   管理员接口不做归属校验
+3. **精选**：`priority = AppConstant.GOOD_APP_PRIORITY`（99）即为精选，由管理员通过 `admin/update` 设置
+4. **查询**：`AppServiceImpl#getQueryWrapper` 统一构造条件（方法引用取列名，空值不参与，`createTime` 倒序）；用户接口在 Controller
+   里只拷贝 `appName`，再由后端固定 `userId` 或 `priority`，前端传其他条件无效
+5. **响应**：`AppVo` 附带 `user`（创建者 `UserVo`），列表用 `listByIds` 批量查创建者；删除为逻辑删除
+
 ## 五、AI 代码生成链路
 
 ### 5.1 当前已打通部分
@@ -221,8 +243,8 @@ aiCodeGeneratorService.generateHtmlCodeStream(prompt) / generateMultiFileCodeStr
 
 ```
 aiCodeGeneratorFacade.generateAndSaveCode(userMessage, CodeGenTypeEnum)
-   ├─ HTML       → generateHtmlCode      → CodeFileSaver.saveHtmlCodeResult      → index.html
-   ├─ MULTI_FILE → generateMultiFileCode → CodeFileSaver.saveMultiFileCodeResult → index.html / style.css / script.js
+   ├─ HTML       → generateHtmlCode      → CodeFileSaverExecutor（HtmlCodeHandler）      → index.html
+   ├─ MULTI_FILE → generateMultiFileCode → CodeFileSaverExecutor（MultiFileCodeHandler） → index.html / style.css / script.js
    └─ null / VUE_PROJECT → BizException(BAD_REQUEST)
         ▼
    返回保存目录 File（tmp/code_output/{bizType}_{雪花ID}/）
@@ -235,8 +257,8 @@ aiCodeGeneratorFacade.generateAndSaveCodeStream(userMessage, CodeGenTypeEnum)
    ├─ HTML       → generateHtmlCodeStream
    └─ MULTI_FILE → generateMultiFileCodeStream
         ▼  doOnNext：片段原样推给下游，同时拼进 StringBuilder
-        ▼  doOnComplete：CodeParser 按 ```html / ```css / ```js 代码块封装为 HtmlCodeResult / MultiFileCodeResult
-   CodeFileSaver 保存到 tmp/code_output/{bizType}_{雪花ID}/，返回 Flux<String>
+        ▼  doOnComplete：CodeParserExecutor 按 ```html / ```css / ```js 代码块封装为 HtmlCodeResult / MultiFileCodeResult
+   CodeFileSaverExecutor 保存到 tmp/code_output/{bizType}_{雪花ID}/，返回 Flux<String>
 ```
 
 | 方法 | 系统提示词文件 | 返回类型（字段） | 用途 |
@@ -261,11 +283,11 @@ aiCodeGeneratorFacade.generateAndSaveCodeStream(userMessage, CodeGenTypeEnum)
 
 | 目标环节 | 依赖的现有资产 | 现状 |
 |---|---|---|
-| 登录用户创建应用 | `app.initPrompt` / `codeGenType` / `userId`、`AppController` | `AppController` 为生成的裸 CRUD，**无 `@AuthCheck`、不套 `Result`、不绑定当前用户** |
+| 登录用户创建应用 | `app.initPrompt` / `codeGenType` / `userId`、`AppController` | ✅ 已打通：`POST /app/add` 绑定当前用户，应用管理接口见 4.7；`codeGenType` 暂固定 `multi_file` |
 | 按应用调用 AI 生成代码 | `AiCodeGeneratorFacade`（已按 `CodeGenTypeEnum` 分发） | 无 HTTP 接口；`app.codeGenType` 需经 `CodeGenTypeEnum.getEnumByValue` 转成枚举再传入门面 |
 | 保存对话历史 | `chat_history.message` / `messageType` / `appId` / `userId`、`ChatHistoryController` | 同样是裸 CRUD，无业务逻辑 |
-| 流式输出 | `generate*CodeStream`（`Flux<String>`）、`StreamingChatModel` | 门面 `generateAndSaveCodeStream` 已实现流式生成 + `CodeParser` 解析 + 落盘并实测；无 SSE 接口 |
-| 代码落盘与部署 | `app.deployKey` / `deployedTime`、`CodeFileSaver`、`AppConstant.CODE_DEPLOY_ROOT_DIR` | 落盘已通过门面与生成串联并实测；部署未实现 |
+| 流式输出 | `generate*CodeStream`（`Flux<String>`）、`StreamingChatModel` | 门面 `generateAndSaveCodeStream` 已实现流式生成 + `CodeParserExecutor` 解析 + 落盘并实测；无 SSE 接口 |
+| 代码落盘与部署 | `app.deployKey` / `deployedTime`、`CodeFileSaverExecutor`、`AppConstant.CODE_DEPLOY_ROOT_DIR` | 落盘已通过门面与生成串联并实测；部署未实现 |
 
 完成后的目标主线：**登录 → 创建应用（保存 initPrompt）→ 调 AI 生成（写 chat_history）→ 解析 / 保存代码 → 部署访问**。
 
@@ -292,6 +314,6 @@ aiCodeGeneratorFacade.generateAndSaveCodeStream(userMessage, CodeGenTypeEnum)
 | 登录失败不区分原因 | `userLogin` | 账号不存在与密码错误都返回 `11002`，`PASSWORD_ERROR(11003)` 未使用（对防账号枚举反而有利） |
 | 注销未登录码不一致 | `userLogout` | 返回 `10003`，与其他接口的未登录 `40100` 不同 |
 | Session 中存完整实体 | `userLogin` | 含密码密文，仅在服务端；若改分布式 Session 需注意序列化与体积 |
-| `/app`、`/chatHistory` 无鉴权 | 生成的 Controller | 任何人可读写，接入主线前需加 `@AuthCheck` 并按 `userId` 校验归属 |
+| `/chatHistory` 无鉴权 | 生成的 Controller | 任何人可读写，接入主线前需加 `@AuthCheck` 并按 `userId` 校验归属（`/app` 已处理，见 4.7） |
 | `HealthController#check` 为 `private` | `HealthController` | 能用但不规范，且不会被日志切面拦截（P-13） |
 | 提示词与结构化输出格式冲突 | `prompt/codegen-*-system-prompt.txt` | 系统提示词要求 Markdown 代码块，结构化输出要求 JSON；`json_object` 模式已兜住格式，仍建议改提示词输出格式（P-25） |

@@ -3,7 +3,7 @@
 > 记录本项目（`zh-ai-code-mpther`）在搭建与开发过程中遇到的真实问题、根因与解决方式。
 > **维护约定**：遇到新坑、或验证发现旧结论不再成立时，在本文件新增/修正章节，并同步更新 [changelog.md](changelog.md)。
 >
-> 最后更新：2026-11-16（新增 P-24 `@SystemMessage` 的 `value` 与 `fromResource`；新增 P-25 结构化输出与提示词格式冲突；P-25 补充流式解析对代码块标记的依赖）
+> 最后更新：2026-11-25（新增 P-26 雪花 ID 前端精度丢失）
 
 ## 索引
 
@@ -34,6 +34,7 @@
 | P-23 | Hutool `JSONUtil` 序列化 record 得到 `{}`，日志切面返回值为空              | 日志    |
 | P-24 | `@SystemMessage(value = "prompt/x.txt")` 把路径当提示词原文发送          | AI 提示词 |
 | P-25 | 结构化输出要求 JSON，系统提示词却要求 Markdown 代码块                       | AI 输出解析 |
+| P-26 | 雪花 ID 以数字返回被前端截断，查看可见、修改报「应用不存在」                     | 接口契约  |
 
 ---
 
@@ -588,3 +589,26 @@ JSON。流式解析侧：`AiCodeGeneratorFacadeStreamTest`（Mock）用固定片
 改提示词后需运行 `AiCodeGeneratorFacadeTest` 的两个流式用例（真实调用），并检查落盘文件非空、首行为代码。
 
 **重新评估条件**：系统提示词改为 JSON 输出格式之后，本条可关闭。
+
+---
+
+## P-26 雪花 ID 以数字返回被前端截断，查看可见、修改报「应用不存在」
+
+**现象**：Knife4j 中调用查看接口能看到应用，复制返回的 `id` 调 `PUT /api/app/update`，日志为
+`参数: {"appUpdateRequest":{"appName":"...","id":483194714099613700}} | 异常: BizException: 应用不存在`，响应 `10001`。
+
+**根因**：
+- 主键为雪花 ID（`Long`，约 `4.8×10^17`），Jackson 默认按 JSON 数字输出。
+- 浏览器（Knife4j / 前端）用 JS `Number`（IEEE 754 双精度）解析，安全整数上限 `2^53-1 ≈ 9.0×10^15`；该量级下只能精确到 64 的倍数，
+  末几位被四舍五入（典型特征：结尾变成 `00`）。
+- 回传的是截断后的值，`getById` 查不到，`checkOwnApp` 抛 `DATA_NOT_FOUND`。
+
+**解决**：新增 `config/JsonConfig`，用 `JsonMapperBuilderCustomizer` 为 `Long` / `long` 注册 Jackson 3 `ToStringSerializer`，响应中
+`Long` 统一输出为字符串；反序列化默认支持字符串转 `Long`，请求侧无需改动。
+
+**注意**：
+1. Boot 4 为 Jackson 3，类在 `tools.jackson.databind.*`，定制器为 `org.springframework.boot.jackson.autoconfigure.JsonMapperBuilderCustomizer`；
+   照抄 Boot 3 教程的 `Jackson2ObjectMapperBuilderCustomizer` / `com.fasterxml.jackson.databind.*` 不会作用于接口响应。
+2. 修复前已被截断的 id 无法还原，需按真实 id 重新获取（真实值与截断值相差不超过 ±32）。
+
+**验证方式**：任一返回 `Long` 的接口（如 `GET /api/chatHistory/page`），响应中对应字段应带引号。

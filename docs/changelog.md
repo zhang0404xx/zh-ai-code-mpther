@@ -3,9 +3,98 @@
 > 记录本项目的所有变更（遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 风格，日期格式 `YYYY-MM-DD`）。
 > **维护约定**：任何依赖、配置、类结构、接口的增删改，都在本文件对应日期下新增条目，并同步更新 [file-class-reference.md](file-class-reference.md)；若涉及问题排查，另记入 [pitfalls.md](pitfalls.md)；若有功能 / 链路新增，同步更新 [project-guide.md](project-guide.md)（无新增则不改）。
 >
-> 最后更新：2026-11-16
+> 最后更新：2026-11-25
 
 ## [未发布]
+
+### 修复（Fixed，2026-11-25）
+
+#### Long 类型 id 前端精度丢失
+
+- `config/JsonConfig.java`：新增全局 JSON 配置，注册 `JsonMapperBuilderCustomizer`，通过 `SimpleModule` 为 `Long` / `long` 绑定
+  Jackson 3 `ToStringSerializer`，所有 `Long` 字段响应时序列化为字符串
+- 修复现象：查看接口能看到应用，回传 id 调 `PUT /api/app/update` 却返回 `10001 应用不存在`；根因为雪花 ID 超出 JS 安全整数范围，
+  前端解析后被四舍五入（见 [pitfalls.md](pitfalls.md) P-26）
+- 反序列化未改动：前端回传字符串或数字 id 均可绑定到 `Long`；分页 `total` 等 `Long` 字段同样变为字符串
+
+### 验证（Verified，2026-11-25）
+
+| 检查项 | 结果 |
+|---|---|
+| `mvnw -B -q compile`（JDK 21） | 编译通过，`JsonMapperBuilderCustomizer` / `tools.jackson` 包路径正确 |
+| `mvnw spring-boot:run` 后 `GET /api/chatHistory/page?pageNumber=1&pageSize=2` | `{"pageNumber":"1","pageSize":"2","records":[],"totalPage":"0","totalRow":"0"}`，`Long` 字段均为字符串 |
+| 验证后服务关闭 | Maven 父进程与 Java 进程已停止，8123 端口已释放 |
+
+### 新增（Added，2026-11-19）
+
+#### 应用模块（App）业务接口
+
+- `AppController`：删除生成器产出的裸 CRUD（`save` / `remove/{id}` / `update` / `list` / `getInfo/{id}` / `page`，无鉴权、不套 `Result`、
+  不绑定当前用户），按 User 模块风格重写为 10 个接口，均返回 `Result`：
+  - 用户（`@AuthCheck`）：`POST /app/add`、`PUT /app/update`、`DELETE /app/delete/{id}`、`GET /app/get/vo/{id}`、
+    `GET /app/my/list/page/vo`、`GET /app/good/list/page/vo`
+  - 管理员（`@AuthCheck(mustRole = ADMIN)`）：`DELETE /app/admin/delete/{id}`、`PUT /app/admin/update`、
+    `GET /app/admin/list/page/vo`、`GET /app/admin/get/vo/{id}`
+  - 用户修改 / 删除先校验应用存在（`10001`）且 `userId` 为当前用户（`40300 只能操作自己的应用`）
+  - 用户两个分页接口 `pageSize > 20` 返回 `40000`；只开放 `appName` 条件，`userId` / `priority` 由后端固定（自己的 / 精选 `99`）
+  - 更新时写入 `editTime = now()`；`updateById` 忽略 `null` 字段，管理员更新只改传入的 `appName` / `cover` / `priority`
+- `model/dto/`：新增 `AppAddRequest`（`initPrompt`）、`AppUpdateRequest`（`id` / `appName`）、`AppAdminUpdateRequest`
+  （`id` / `appName` / `cover` / `priority`）、`AppQueryRequest`（`extends PageQuery`，除时间外的全部字段）
+- `model/vo/AppVo.java`：新增应用视图，含 `UserVo user`（脱敏创建者信息），不返回 `editTime` / `isDelete`
+- `AppService` / `AppServiceImpl`：新增 `createApp`（`initPrompt` 必填；`appName` 取 prompt 前 12 字，`codeGenType` 暂固定
+  `multi_file`，`priority` 默认 `0`）、`getAppVo`、`getAppVoList`（`listByIds` 一次查出创建者，避免 N+1）、`getQueryWrapper`
+  （`eq` / `like` 全部用方法引用 + `isEffective` 条件，空值不参与；默认 `createTime` 倒序）
+- `AppConstant`：新增 `USER_APP_MAX_PAGE_SIZE = 20`、`DEFAULT_APP_NAME_LENGTH = 12`
+- 管理员分页不受 20 条限制，但仍受 `PageQuery.MAX_PAGE_SIZE = 100` 全局上限约束
+
+### 验证（Verified，2026-11-19）
+
+| 检查项 | 结果 |
+|---|---|
+| `mvnw -q -DskipTests compile`（JDK 21） | 编译通过 |
+| `mvnw spring-boot:run` 后用两个测试账号（`apptest01` 普通用户、`apptest02` 直连库改为 admin）跑 22 步接口脚本 | 全部符合预期：未登录创建 `40100`；空 `initPrompt` `40000`；创建 / 改名 / 详情 / 分页成功，详情带 `user`；他人改名、删除 `40300`；`pageSize=21` `40000`；普通用户调管理员分页 `40300`；管理员改 `priority=99` 后精选列表命中；管理员按 `codeGenType` + `initPrompt` 模糊查询命中；管理员删除、本人删除成功，删除后详情 `10001` |
+| 验证后服务关闭 | Maven 父进程与 Java 进程已停止，8123 端口已释放 |
+
+### 变更（Changed，2026-11-17）
+
+#### 代码解析 / 落盘改为执行器方案
+
+- 新增 `core/parser/` 包，按「策略 + 模板方法 + 执行器」拆分原 `CodeParser` / `CodeFileSaver` 中的重复逻辑：
+  - `CodeParser<T>`（接口）：`parseCode(String)`，代码块正则与 `extractCode` / `extractDescription` 以常量与 `default` 方法共享
+  - `HtmlCodeParser` / `MultiFileCodeParser`：分别解析为 `HtmlCodeResult` / `MultiFileCodeResult`，规则与原实现一致
+  - `CodeParserExecutor.executeParser(String, CodeGenTypeEnum)`：按类型选择解析器
+  - `CodeFileSaverTemplate<T>`（抽象类）：`final saveCode(T)` 固定「校验非空 → 建 `{bizType}_{雪花ID}` 目录 → 写文件」，子类实现
+    `getCodeType()` / `saveFiles(...)`
+  - `HtmlCodeFileSaverTemplate` / `MultiFileCodeFileSaverTemplate`：分别写 `index.html` 与 `index.html` / `style.css` / `script.js`
+  - `CodeFileSaverExecutor.executeSaver(Object, CodeGenTypeEnum)`：按类型选择保存器
+- 删除 `core/CodeParser.java`、`core/CodeFileSaver.java`
+- 同类型的解析器与保存器合并为一个处理器，便于按类型阅读：`HtmlCodeParser` + `HtmlCodeFileSaverTemplate` → `HtmlCodeHandler`，
+  `MultiFileCodeParser` + `MultiFileCodeFileSaverTemplate` → `MultiFileCodeHandler`（`extends CodeFileSaverTemplate<T> implements CodeParser<T>`）；
+  两个执行器改为持有处理器，对外方法不变
+- 保存相关类单独成包：`CodeFileSaverTemplate` / `CodeFileSaverExecutor` 由 `core/parser/` 移到新建的 `core/saver/`，类内容不变；
+  `core/parser/` 只留解析器接口、`CodeParserExecutor` 与两个处理器；处理器、门面类改为从 `core.saver` 导入
+- 处理器单独成包：`HtmlCodeHandler` / `MultiFileCodeHandler` 由 `core/parser/` 移到新建的 `core/handler/`，类内容不变；
+  `core/parser/` 只留 `CodeParser` + `CodeParserExecutor`，`core/saver/` 只留 `CodeFileSaverTemplate` + `CodeFileSaverExecutor`
+- 两个执行器的私有字段改为抽象类型：`CodeParserExecutor` 持有 `CodeParser<HtmlCodeResult>` / `CodeParser<MultiFileCodeResult>`，
+  `CodeFileSaverExecutor` 持有 `CodeFileSaverTemplate<HtmlCodeResult>` / `CodeFileSaverTemplate<MultiFileCodeResult>`；`execute*` 方法只调用接口 / 模板方法，
+  具体处理器类只出现在字段初始化的 `new` 中
+- `AiCodeGeneratorFacade`：同步入口改调 `CodeFileSaverExecutor`；流式两个私有方法合并为 `processCodeStream(Flux<String>, CodeGenTypeEnum)`，
+  类型不支持时仍在调用时同步抛 `BizException`，模型调用仍延迟到订阅时；解析 / 保存异常只记 `error` 日志，不影响流
+- `src/test/.../core/AiCodeGeneratorFacadeSaveTest.java`：新增门面同步入口单元测试（`MockitoExtension` 模拟 `AiCodeGeneratorService`，
+  不调用模型），共 5 例：HTML 写出 `index.html` 且目录前缀为 `html_`、多文件写出三个文件且内容一致、多文件缺失代码块写空文件、
+  AI 返回 `null` 抛 `BizException` 且不建目录、类型为 `null` 抛 `BizException` 且不调用 AI 服务；测试新建的输出目录在 `@AfterEach` 中删除
+
+### 验证（Verified，2026-11-17）
+
+| 检查项 | 结果 |
+|---|---|
+| `mvnw -q test "-Dtest=AiCodeGeneratorFacadeStreamTest"`（JDK 21，Mock） | 编译通过，5 例无失败；未启动服务 |
+| 合并为 `*CodeHandler` 后 `mvnw -B test "-Dtest=AiCodeGeneratorFacadeStreamTest"` | `Tests run: 5, Failures: 0, Errors: 0`（6.93 s），BUILD SUCCESS；未启动服务 |
+| 拆出 `core/saver/` 后 `mvnw -B test "-Dtest=AiCodeGeneratorFacadeStreamTest"` | `Tests run: 5, Failures: 0, Errors: 0`（5.02 s），BUILD SUCCESS；未启动服务 |
+| 拆出 `core/handler/` 后 `mvnw -B test "-Dtest=AiCodeGeneratorFacadeStreamTest"` | `Tests run: 5, Failures: 0, Errors: 0`（5.71 s），BUILD SUCCESS；未启动服务 |
+| 执行器字段改为接口 / 模板类型后 `mvnw -B test "-Dtest=AiCodeGeneratorFacadeStreamTest"` | `Tests run: 5, Failures: 0, Errors: 0`（4.99 s），BUILD SUCCESS；未启动服务 |
+| `mvnw -B test "-Dtest=AiCodeGeneratorFacadeSaveTest,AiCodeGeneratorFacadeStreamTest"`（同步 + 流式，Mock） | `Tests run: 10, Failures: 0, Errors: 0`（Save 5 例 5.57 s / Stream 5 例 0.12 s），BUILD SUCCESS；不调用 DeepSeek；未启动服务 |
+| `mvnw -B test "-Dtest=AiCodeGeneratorFacadeTest#generateAndSaveCode+testGenerateAndSaveCode"`（同步，真实调用 DeepSeek；同步生成暂无 HTTP 接口，以 `@SpringBootTest` 代替启动服务） | `Tests run: 2, Failures: 0, Errors: 0`（25.46 s），上下文启动 3.52 s；生成 `multi_file_2122678221318844416/`（`index.html` 587 B / `style.css` 1052 B / `script.js` 658 B）与 `html_2122678286108258304/`（`index.html` 1720 B），文件首行均为代码、无 ```` ``` ```` 残留；测试 JVM 已退出，8123 未被占用 |
 
 ### 新增（Added，2026-11-16）
 

@@ -16,6 +16,16 @@ public interface AppConstant {
     Integer DEFAULT_APP_PRIORITY = 0;
 
     /**
+     * 用户分页查询应用时每页最大条数
+     */
+    int USER_APP_MAX_PAGE_SIZE = 20;
+
+    /**
+     * 创建应用时由 initPrompt 截取默认应用名称的最大长度
+     */
+    int DEFAULT_APP_NAME_LENGTH = 12;
+
+    /**
      * 应用生成目录
      */
     String CODE_OUTPUT_ROOT_DIR = System.getProperty("user.dir") + "/tmp/code_output";
